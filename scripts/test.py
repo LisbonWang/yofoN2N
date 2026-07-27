@@ -42,9 +42,9 @@ def main() -> int:
         case_dir.mkdir(parents=True, exist_ok=True)
         for input_kind in resolve_input_kinds(args.input_kind):
             source = np.load(record[f"{input_kind}_path"], mmap_mode="r")
-            prediction = infer_volume(model, source, tuple(config["data"]["window"]), device, args.batch_size)
+            prediction = infer_volume(model, source, device, args.batch_size)
             np.save(case_dir / f"{input_kind}_denoised.npy", prediction)
-            metrics = evaluate_volume(prediction, full, tuple(config["data"]["window"]))
+            metrics = evaluate_volume(prediction, full, float(config["data"]["metric_data_range"]))
             (case_dir / f"{input_kind}_metrics.json").write_text(
                 json.dumps(
                     {"case_id": case_id, "source_kind": input_kind, "reference": "correlated full-view reconstruction", "metrics": metrics},

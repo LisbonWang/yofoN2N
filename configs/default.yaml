@@ -10,7 +10,7 @@ reconstruction:
 
 data:
   manifest: outputs/splits.json
-  window: [-1.0, 3.0]
+  metric_data_range: 4.0
   split_ratios: [0.8, 0.1, 0.1]
   seed: 42
   augment: true

@@ -19,17 +19,15 @@ def resolve_input_kinds(input_kind: str) -> tuple[str, ...]:
 
 
 @torch.no_grad()
-def infer_volume(model, volume: np.ndarray, window: tuple[float, float], device: torch.device, batch_size: int = 4) -> np.ndarray:
+def infer_volume(model, volume: np.ndarray, device: torch.device, batch_size: int = 4) -> np.ndarray:
     source = np.asarray(volume)
     if source.ndim != 3:
         raise ValueError("volume must have shape (z, y, x)")
-    low, high = map(float, window)
-    if high <= low or batch_size < 1:
-        raise ValueError("window and batch_size are invalid")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     padded_slices, paddings = [], []
     for image in source:
-        normalized = np.clip((image.astype(np.float32) - low) / (high - low), 0.0, 1.0)
-        padded, padding = pad_to_multiple(normalized)
+        padded, padding = pad_to_multiple(image.astype(np.float32))
         padded_slices.append(padded)
         paddings.append(padding)
     model.eval()
@@ -39,10 +37,9 @@ def infer_volume(model, volume: np.ndarray, window: tuple[float, float], device:
         outputs.append(model(batch).detach().float().cpu().numpy()[:, 0])
     restored = []
     for image, padding in zip(np.concatenate(outputs, axis=0), paddings):
-        restored.append(unpad(image, padding) * (high - low) + low)
+        restored.append(unpad(image, padding))
     return np.stack(restored).astype(np.float32)
 
 
-def evaluate_volume(prediction: np.ndarray, target: np.ndarray, window: tuple[float, float]) -> dict[str, float]:
-    low, high = map(float, window)
-    return compute_metrics(prediction, target, data_range=high - low)
+def evaluate_volume(prediction: np.ndarray, target: np.ndarray, metric_data_range: float) -> dict[str, float]:
+    return compute_metrics(prediction, target, data_range=metric_data_range)

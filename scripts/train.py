@@ -28,9 +28,9 @@ def main() -> int:
     data_cfg, train_cfg = config["data"], config["training"]
     seed_everything(int(data_cfg["seed"]))
     manifest = load_manifest(args.manifest or data_cfg["manifest"])
-    window = tuple(data_cfg["window"])
-    train_data = PairedSliceDataset(manifest, "train", window, augment=bool(data_cfg.get("augment", True)))
-    val_data = PairedSliceDataset(manifest, "val", window, augment=False)
+    max_slices = data_cfg.get("max_slices_per_case")
+    train_data = PairedSliceDataset(manifest, "train", augment=bool(data_cfg.get("augment", True)), max_slices_per_case=max_slices)
+    val_data = PairedSliceDataset(manifest, "val", augment=False, max_slices_per_case=max_slices)
     loader_args = {"batch_size": int(train_cfg["batch_size"]), "num_workers": int(train_cfg["num_workers"]), "pin_memory": True}
     train_loader = DataLoader(train_data, shuffle=True, **loader_args)
     val_loader = DataLoader(val_data, shuffle=False, **loader_args)
