@@ -59,12 +59,16 @@ python scripts\test.py --config configs\default.yaml `
 ### Full-target supervision
 
 Each Mode2 case produces `even.npy`, `odd.npy`, `full.npy`, and `pair.json`.
-The full reconstruction uses all original views. Training uses normalized L1 for
+The full reconstruction uses all original views. Training uses raw-value L1 for
 the correlated pairs `even -> full` and `odd -> full`; this is not independent
 Noise2Noise supervision because the target contains the input subset views.
 
 The test command writes `even_denoised.npy` and `odd_denoised.npy` with matching
 metrics files. The reference label is `correlated full-view reconstruction`.
+
+For a case-isolated 10-epoch smoke run, use `configs/smoke.yaml`. It uses raw
+float32 values, batch size 2, and the first 16 axial slices per train/validation
+case; `metric_data_range: 4.0` applies only to PSNR and SSIM.
 
 训练输入是完整二维轴向切片，右侧和底部只补齐到 32 的倍数；没有二维随机 patch 选项。每个切片提供 `even -> full` 和 `odd -> full` 两个样本，增强对输入和全视图目标同步。测试会分别将 even 和 odd 输入与相关的全视图重建进行比较；该参考不是独立 Noise2Noise 目标，也不应视为干净真值。
 
