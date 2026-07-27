@@ -22,6 +22,8 @@ Here, full.npy is reconstructed from all 640 projections of the same scan.
 - The Dataset emits two samples per axial slice: even -> full and odd -> full.
 - Synchronized geometric augmentation applies to source and target. There is no direction swapping.
 - Full-slice padding to multiples of 32 remains the only spatial preprocessing.
+- Version one optimizes mean absolute error (L1) after the fixed intensity window maps values to [0, 1].
+- L2 and L1-plus-SSIM are future ablation experiments, not part of this pairing migration.
 
 ## Testing And Reporting
 
@@ -31,4 +33,4 @@ Here, full.npy is reconstructed from all 640 projections of the same scan.
 
 ## Limitation
 
-The full target includes the input subset projections, so this is correlated supervision rather than strict independent Noise2Noise. It is expected to reduce noise toward the all-view reconstruction but must not be presented as an unbiased clean-target validation.
+The full target includes the input subset projections, so this is correlated supervision rather than strict independent Noise2Noise. L1 estimates a conditional median rather than L2's conditional mean; both are valid for independent Noise2Noise only under their respective zero-centered noise assumptions. This setup is expected to reduce noise toward the all-view reconstruction but must not be presented as an unbiased clean-target validation.
