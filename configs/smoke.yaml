@@ -1,6 +1,6 @@
 reconstruction:
   source_root: 'Z:\raid5\共享数据\典型图像\长安管口-PDL'
-  output_root: outputs/smoke-raw/pairs
+  output_root: 'Z:\raid5\共享数据\典型图像\长安管口-PDL-N2N-Pairs'
   xday_dir: 'D:\XDay Release\XDay617.2'
   post_procs: ''
   dtype: float32

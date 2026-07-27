@@ -70,6 +70,20 @@ For a case-isolated 10-epoch smoke run, use `configs/smoke.yaml`. It uses raw
 float32 values, batch size 2, and the first 16 axial slices per train/validation
 case; `metric_data_range: 4.0` applies only to PSNR and SSIM.
 
+### Pair Reconstruction Storage
+
+Use the configuration-driven Mode2 reconstruction command to write only
+`even.npy`, `odd.npy`, `full.npy`, and `pair.json` under
+`Z:\raid5\共享数据\典型图像\长安管口-PDL-N2N-Pairs`:
+
+```powershell
+python scripts\reconstruct_mode2_pairs.py --config configs\default.yaml --dry-run
+python scripts\reconstruct_mode2_pairs.py --config configs\default.yaml
+```
+
+Training manifests, checkpoints, history, metrics, and denoised outputs remain
+local to the repository's ignored `outputs/` and `runs/` directories.
+
 训练输入是完整二维轴向切片，右侧和底部只补齐到 32 的倍数；没有二维随机 patch 选项。每个切片提供 `even -> full` 和 `odd -> full` 两个样本，增强对输入和全视图目标同步。测试会分别将 even 和 odd 输入与相关的全视图重建进行比较；该参考不是独立 Noise2Noise 目标，也不应视为干净真值。
 
 ## 工程结构
