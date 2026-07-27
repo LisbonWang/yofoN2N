@@ -1,0 +1,17 @@
+name: torch
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy=1.26.4
+  - pyyaml
+  - scikit-image
+  - tqdm
+  - pytest
+  - pip:
+      - filelock
+      - sympy
+      - networkx
+      - jinja2
+      - typing_extensions
