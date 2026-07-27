@@ -53,10 +53,20 @@ python scripts\create_splits.py outputs\pairs outputs\splits.json
 python scripts\train.py --config configs\default.yaml --manifest outputs\splits.json --run-dir runs\default
 python scripts\test.py --config configs\default.yaml `
   --manifest outputs\splits.json --checkpoint runs\default\best.pt `
-  --output-dir outputs\test --split test
+  --output-dir outputs\test --split test --input-kind both
 ```
 
-训练输入是完整二维轴向切片，右侧和底部只补齐到 32 的倍数；没有二维随机 patch 选项。训练样本按索引确定性交替 `even -> odd` 和 `odd -> even`，增强对配对图像同步；验证和测试固定为 `even -> odd`。测试指标是相互独立重建之间的 Noise2Noise proxy，不是干净真值指标。
+### Full-target supervision
+
+Each Mode2 case produces `even.npy`, `odd.npy`, `full.npy`, and `pair.json`.
+The full reconstruction uses all original views. Training uses normalized L1 for
+the correlated pairs `even -> full` and `odd -> full`; this is not independent
+Noise2Noise supervision because the target contains the input subset views.
+
+The test command writes `even_denoised.npy` and `odd_denoised.npy` with matching
+metrics files. The reference label is `correlated full-view reconstruction`.
+
+训练输入是完整二维轴向切片，右侧和底部只补齐到 32 的倍数；没有二维随机 patch 选项。每个切片提供 `even -> full` 和 `odd -> full` 两个样本，增强对输入和全视图目标同步。测试会分别将 even 和 odd 输入与相关的全视图重建进行比较；该参考不是独立 Noise2Noise 目标，也不应视为干净真值。
 
 ## 工程结构
 

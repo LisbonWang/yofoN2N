@@ -10,6 +10,14 @@ from cbct_n2n.data.dataset import pad_to_multiple, unpad
 from .metrics import compute_metrics
 
 
+def resolve_input_kinds(input_kind: str) -> tuple[str, ...]:
+    if input_kind == "both":
+        return ("even", "odd")
+    if input_kind in {"even", "odd"}:
+        return (input_kind,)
+    raise ValueError(f"Unsupported input kind: {input_kind}")
+
+
 @torch.no_grad()
 def infer_volume(model, volume: np.ndarray, window: tuple[float, float], device: torch.device, batch_size: int = 4) -> np.ndarray:
     source = np.asarray(volume)

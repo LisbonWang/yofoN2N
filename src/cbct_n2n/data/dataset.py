@@ -42,17 +42,18 @@ class PairedSliceDataset(Dataset):
         self.window, self.augment = (low, high), augment
         records = {str(item["case_id"]): item for item in manifest["records"]}
         case_ids = manifest["splits"][split]
-        self.volumes: list[tuple[str, np.ndarray, np.ndarray]] = []
-        self.slices: list[tuple[int, int]] = []
+        self.volumes: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+        self.slices: list[tuple[int, int, str]] = []
         for case_id in case_ids:
             item = records[case_id]
             even = np.load(Path(item["even_path"]), mmap_mode="r")
             odd = np.load(Path(item["odd_path"]), mmap_mode="r")
-            if even.shape != odd.shape or even.ndim != 3:
-                raise ValueError(f"Invalid paired volumes for {case_id}: {even.shape}, {odd.shape}")
+            full = np.load(Path(item["full_path"]), mmap_mode="r")
+            if even.ndim != 3 or even.shape != odd.shape or even.shape != full.shape:
+                raise ValueError(f"Invalid paired volumes for {case_id}: even={even.shape}, odd={odd.shape}, full={full.shape}")
             index = len(self.volumes)
-            self.volumes.append((case_id, even, odd))
-            self.slices.extend((index, z) for z in range(even.shape[0]))
+            self.volumes.append((case_id, even, odd, full))
+            self.slices.extend((index, z, source_kind) for z in range(even.shape[0]) for source_kind in ("even", "odd"))
 
     def __len__(self) -> int:
         return len(self.slices)
@@ -62,24 +63,22 @@ class PairedSliceDataset(Dataset):
         return np.clip((image.astype(np.float32) - low) / (high - low), 0.0, 1.0)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        volume_index, z = self.slices[index]
-        case_id, even_volume, odd_volume = self.volumes[volume_index]
-        even, odd = self._normalize(even_volume[z]), self._normalize(odd_volume[z])
-        even, padding = pad_to_multiple(even)
-        odd, odd_padding = pad_to_multiple(odd)
-        if padding != odd_padding:
-            raise ValueError("Paired slice padding mismatch")
-        even_tensor, odd_tensor = torch.from_numpy(even.copy()).unsqueeze(0), torch.from_numpy(odd.copy()).unsqueeze(0)
-        source_tensor, target_tensor = even_tensor, odd_tensor
-        if self.augment and index % 2 == 1:
-            source_tensor, target_tensor = odd_tensor, even_tensor
+        volume_index, z, source_kind = self.slices[index]
+        case_id, even_volume, odd_volume, full_volume = self.volumes[volume_index]
+        source_volume = even_volume if source_kind == "even" else odd_volume
+        source, target = self._normalize(source_volume[z]), self._normalize(full_volume[z])
+        source, padding = pad_to_multiple(source)
+        target, target_padding = pad_to_multiple(target)
+        if padding != target_padding:
+            raise ValueError("Source and target slice padding mismatch")
+        source_tensor = torch.from_numpy(source.copy()).unsqueeze(0)
+        target_tensor = torch.from_numpy(target.copy()).unsqueeze(0)
         if self.augment:
             if torch.rand(()) < 0.5:
-                even_tensor, odd_tensor = torch.flip(even_tensor, (-1,)), torch.flip(odd_tensor, (-1,))
+                source_tensor, target_tensor = torch.flip(source_tensor, (-1,)), torch.flip(target_tensor, (-1,))
             if torch.rand(()) < 0.5:
-                even_tensor, odd_tensor = torch.flip(even_tensor, (-2,)), torch.flip(odd_tensor, (-2,))
-            if even_tensor.shape[-2] == even_tensor.shape[-1]:
+                source_tensor, target_tensor = torch.flip(source_tensor, (-2,)), torch.flip(target_tensor, (-2,))
+            if source_tensor.shape[-2] == source_tensor.shape[-1]:
                 turns = int(torch.randint(0, 4, ()).item())
-                even_tensor, odd_tensor = torch.rot90(even_tensor, turns, (-2, -1)), torch.rot90(odd_tensor, turns, (-2, -1))
-            source_tensor, target_tensor = (even_tensor, odd_tensor) if index % 2 == 0 else (odd_tensor, even_tensor)
-        return {"even": even_tensor, "odd": odd_tensor, "source": source_tensor, "target": target_tensor, "case_id": case_id, "slice_index": z}
+                source_tensor, target_tensor = torch.rot90(source_tensor, turns, (-2, -1)), torch.rot90(target_tensor, turns, (-2, -1))
+        return {"source": source_tensor, "target": target_tensor, "case_id": case_id, "slice_index": z, "source_kind": source_kind}

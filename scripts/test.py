@@ -14,7 +14,7 @@ from cbct_n2n.config import load_config
 from cbct_n2n.data.manifest import load_manifest
 from cbct_n2n.models import UNet2D
 from cbct_n2n.training.checkpoint import load_checkpoint
-from cbct_n2n.training.inference import evaluate_volume, infer_volume
+from cbct_n2n.training.inference import evaluate_volume, infer_volume, resolve_input_kinds
 
 
 def main() -> int:
@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--input-kind", choices=["even", "odd", "both"], default="both")
     args = parser.parse_args()
     config = load_config(args.config)
     manifest = load_manifest(args.manifest or config["data"]["manifest"])
@@ -36,14 +37,22 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for case_id in manifest["splits"][args.split]:
         record = records[case_id]
-        even, odd = np.load(record["even_path"], mmap_mode="r"), np.load(record["odd_path"], mmap_mode="r")
-        prediction = infer_volume(model, even, tuple(config["data"]["window"]), device, args.batch_size)
+        full = np.load(record["full_path"], mmap_mode="r")
         case_dir = args.output_dir / case_id
         case_dir.mkdir(parents=True, exist_ok=True)
-        np.save(case_dir / "denoised.npy", prediction)
-        metrics = evaluate_volume(prediction, odd, tuple(config["data"]["window"]))
-        (case_dir / "metrics.json").write_text(json.dumps({"case_id": case_id, "reference": "independent odd reconstruction", "metrics": metrics}, indent=2), encoding="utf-8")
-        print(f"{case_id}: {metrics}")
+        for input_kind in resolve_input_kinds(args.input_kind):
+            source = np.load(record[f"{input_kind}_path"], mmap_mode="r")
+            prediction = infer_volume(model, source, tuple(config["data"]["window"]), device, args.batch_size)
+            np.save(case_dir / f"{input_kind}_denoised.npy", prediction)
+            metrics = evaluate_volume(prediction, full, tuple(config["data"]["window"]))
+            (case_dir / f"{input_kind}_metrics.json").write_text(
+                json.dumps(
+                    {"case_id": case_id, "source_kind": input_kind, "reference": "correlated full-view reconstruction", "metrics": metrics},
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"{case_id} {input_kind}: {metrics}")
     return 0
 
 

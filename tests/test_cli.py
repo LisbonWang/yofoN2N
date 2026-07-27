@@ -11,3 +11,5 @@ def test_all_script_help_commands():
         assert "usage:" in result.stdout
         if name == "prepare_pairs.py":
             assert "--mode" in result.stdout
+        if name == "test.py":
+            assert "--input-kind" in result.stdout
