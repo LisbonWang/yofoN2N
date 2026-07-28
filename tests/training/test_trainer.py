@@ -35,3 +35,15 @@ def test_fit_resume_preserves_historical_best_checkpoint(tmp_path, monkeypatch):
     state = torch.load(tmp_path / "best.pt", map_location="cpu", weights_only=False)
     assert state["epoch"] == 0
     assert state["metrics"]["val_loss"] == 0.1
+
+
+def test_fit_prints_epoch_progress_with_best_marker(tmp_path, monkeypatch, capsys):
+    model = torch.nn.Conv2d(1, 1, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    config = {"training": {"epochs": 1, "amp": False, "patience": 1}}
+    monkeypatch.setattr(trainer_module, "train_one_epoch", lambda *args, **kwargs: 0.25)
+    monkeypatch.setattr(trainer_module, "validate", lambda *args, **kwargs: 0.125)
+
+    trainer_module.fit(model, [], [], optimizer, None, torch.device("cpu"), tmp_path, config)
+
+    assert capsys.readouterr().out == "epoch=1/1 train_l1=0.250000 val_l1=0.125000 lr=1.000e-03 best\n"

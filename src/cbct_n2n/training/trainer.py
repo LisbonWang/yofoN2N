@@ -94,8 +94,16 @@ def fit(model, train_loader, val_loader, optimizer, scheduler, device: torch.dev
         if val_loss < best_loss:
             best_loss, stale, best_metrics = val_loss, 0, metrics
             save_checkpoint(destination / "best.pt", model, optimizer, scheduler, epoch, metrics, config)
+            status = " best"
         else:
             stale += 1
+            status = ""
+        print(
+            f"epoch={epoch + 1}/{options['epochs']} train_l1={train_loss:.6f} "
+            f"val_l1={val_loss:.6f} lr={metrics['learning_rate']:.3e}{status}",
+            flush=True,
+        )
+        if status == "":
             if stale >= int(options.get("patience", options["epochs"])):
                 break
     return best_metrics
