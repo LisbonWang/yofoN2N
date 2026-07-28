@@ -15,12 +15,25 @@ def test_create_splits_uses_current_pair_root_instead_of_stored_absolute_paths(t
         "even_path": r"\\server\share\pairs\case-1\even.npy",
         "odd_path": r"\\server\share\pairs\case-1\odd.npy",
         "full_path": r"\\server\share\pairs\case-1\full.npy",
+        "raw_dir": r"\\server\share\raid5\source\case-1\raw",
+        "cfg_dir": r"\\server\share\raid5\source\case-1\config\Mode2",
     }
     (case_dir / "pair.json").write_text(json.dumps(record), encoding="utf-8")
     manifest_path = tmp_path / "splits.json"
 
     result = subprocess.run(
-        [sys.executable, str(root / "scripts" / "create_splits.py"), str(case_dir.parent), str(manifest_path), "--ratios", "1", "0", "0"],
+        [
+            sys.executable,
+            str(root / "scripts" / "create_splits.py"),
+            str(case_dir.parent),
+            str(manifest_path),
+            "--ratios",
+            "1",
+            "0",
+            "0",
+            "--source-root",
+            str(tmp_path / "source"),
+        ],
         capture_output=True,
         text=True,
     )
@@ -31,3 +44,5 @@ def test_create_splits_uses_current_pair_root_instead_of_stored_absolute_paths(t
     assert generated["even_path"] == str(case_dir / "even.npy")
     assert generated["odd_path"] == str(case_dir / "odd.npy")
     assert generated["full_path"] == str(case_dir / "full.npy")
+    assert generated["raw_dir"] == str(tmp_path / "source" / "case-1" / "raw")
+    assert generated["cfg_dir"] == str(tmp_path / "source" / "case-1" / "config" / "Mode2")

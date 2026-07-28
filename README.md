@@ -93,7 +93,8 @@ start training directly with Python:
 ```bash
 python3 scripts/create_splits.py \
   /data/raid5/共享数据/典型图像/长安管口-PDL-N2N-Pairs \
-  outputs/splits-linux.json
+  outputs/splits-linux.json \
+  --source-root /data/raid5/共享数据/典型图像/长安管口-PDL
 
 python3 scripts/train.py \
   --config configs/default.yaml \
