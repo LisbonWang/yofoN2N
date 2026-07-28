@@ -92,6 +92,7 @@ On Linux, with the pair share mounted at
 ```bash
 chmod +x scripts/train_linux.sh
 ./scripts/train_linux.sh
+# `sh scripts/train_linux.sh` is also supported when Bash is installed.
 ```
 
 Set `PYTHON_BIN`, `PAIR_ROOT`, `MANIFEST`, `CONFIG`, `RUN_DIR`, or `RESUME` to
