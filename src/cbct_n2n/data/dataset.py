@@ -33,12 +33,16 @@ def unpad(image: np.ndarray, padding: Padding) -> np.ndarray:
 
 
 class PairedSliceDataset(Dataset):
-    """Full axial slices; deliberately has no random crop path."""
+    """Full axial slices with full-view or cross-subset supervision."""
 
-    def __init__(self, manifest: dict[str, Any], split: str, augment: bool = False, max_slices_per_case: int | None = None):
+    def __init__(self, manifest: dict[str, Any], split: str, augment: bool = False, max_slices_per_case: int | None = None,
+                 supervision_mode: str = "full_view"):
         if max_slices_per_case is not None and max_slices_per_case < 1:
             raise ValueError("max_slices_per_case must be positive when provided")
+        if supervision_mode not in {"full_view", "half_view_n2n"}:
+            raise ValueError(f"Unsupported supervision mode: {supervision_mode}")
         self.augment = augment
+        self.supervision_mode = supervision_mode
         records = {str(item["case_id"]): item for item in manifest["records"]}
         case_ids = manifest["splits"][split]
         self.volumes: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
@@ -63,7 +67,11 @@ class PairedSliceDataset(Dataset):
         case_id, even_volume, odd_volume, full_volume = self.volumes[volume_index]
         source_volume = even_volume if source_kind == "even" else odd_volume
         source = np.asarray(source_volume[z], dtype=np.float32)
-        target = np.asarray(full_volume[z], dtype=np.float32)
+        if self.supervision_mode == "full_view":
+            target_volume = full_volume
+        else:
+            target_volume = odd_volume if source_kind == "even" else even_volume
+        target = np.asarray(target_volume[z], dtype=np.float32)
         source, padding = pad_to_multiple(source)
         target, target_padding = pad_to_multiple(target)
         if padding != target_padding:

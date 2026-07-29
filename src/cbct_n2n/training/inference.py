@@ -43,3 +43,15 @@ def infer_volume(model, volume: np.ndarray, device: torch.device, batch_size: in
 
 def evaluate_volume(prediction: np.ndarray, target: np.ndarray, metric_data_range: float) -> dict[str, float]:
     return compute_metrics(prediction, target, data_range=metric_data_range)
+
+
+def write_raw_volume(path: str | Path, volume: np.ndarray) -> None:
+    """Write a (z, y, x) volume as headerless little-endian float32 RAW."""
+    source = np.asarray(volume)
+    if source.ndim != 3:
+        raise ValueError("volume must have shape (z, y, x)")
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as stream:
+        for image in source:
+            np.asarray(image, dtype="<f4").tofile(stream)

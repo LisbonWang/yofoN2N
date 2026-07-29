@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 import torch
 from torch.utils.data import DataLoader
 
@@ -41,6 +42,34 @@ def test_dataset_expands_each_axial_slice_to_even_and_odd_full_targets(tmp_path)
     assert batch["source"].shape == (2, 1, 32, 32)
     assert batch["target"].shape == (2, 1, 32, 32)
     assert batch["source_kind"] == ["even", "odd"]
+
+
+def test_dataset_cross_pairs_half_view_n2n_targets(tmp_path):
+    even = np.arange(2 * 3 * 5, dtype=np.float32).reshape(2, 3, 5)
+    odd = even + 10
+    full = even + 5
+    for kind, volume in (("even", even), ("odd", odd), ("full", full)):
+        np.save(tmp_path / f"{kind}.npy", volume)
+    record = {"case_id": "c", **{f"{kind}_path": str(tmp_path / f"{kind}.npy") for kind in ("even", "odd", "full")}}
+    manifest = {"records": [record], "splits": {"train": ["c"]}}
+
+    dataset = PairedSliceDataset(manifest, "train", supervision_mode="half_view_n2n")
+
+    np.testing.assert_allclose(dataset[0]["source"][..., :3, :5], even[0][None])
+    np.testing.assert_allclose(dataset[0]["target"][..., :3, :5], odd[0][None])
+    np.testing.assert_allclose(dataset[1]["source"][..., :3, :5], odd[0][None])
+    np.testing.assert_allclose(dataset[1]["target"][..., :3, :5], even[0][None])
+
+
+def test_dataset_rejects_unknown_supervision_mode(tmp_path):
+    volume = np.zeros((1, 2, 2), dtype=np.float32)
+    for kind in ("even", "odd", "full"):
+        np.save(tmp_path / f"{kind}.npy", volume)
+    record = {"case_id": "c", **{f"{kind}_path": str(tmp_path / f"{kind}.npy") for kind in ("even", "odd", "full")}}
+    manifest = {"records": [record], "splits": {"train": ["c"]}}
+
+    with pytest.raises(ValueError, match="Unsupported supervision mode"):
+        PairedSliceDataset(manifest, "train", supervision_mode="unsupported")
 
 
 def test_augmented_training_preserves_source_kind_and_batches_non_square(tmp_path):
