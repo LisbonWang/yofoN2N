@@ -1,3 +1,4 @@
 from .manifest import create_case_splits, load_manifest, save_manifest
+from .raw_dataset import RawPairedSliceDataset
 
-__all__ = ["create_case_splits", "load_manifest", "save_manifest"]
+__all__ = ["RawPairedSliceDataset", "create_case_splits", "load_manifest", "save_manifest"]
