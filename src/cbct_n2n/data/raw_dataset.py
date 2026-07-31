@@ -54,8 +54,10 @@ class RawPairedSliceDataset(Dataset):
         target, target_padding = pad_to_multiple(np.asarray(target_volume[z], dtype=np.float32))
         if source_padding != target_padding:
             raise ValueError("Source and target slice padding mismatch")
-        source_tensor = torch.from_numpy(source.copy()).unsqueeze(0)
-        target_tensor = torch.from_numpy(target.copy()).unsqueeze(0)
+        # Clone after conversion: tensors backed by NumPy/memmap storage are
+        # not resizable in older PyTorch versions used by the Linux trainer.
+        source_tensor = torch.from_numpy(source).clone().unsqueeze(0)
+        target_tensor = torch.from_numpy(target).clone().unsqueeze(0)
         if self.augment:
             if torch.rand(()) < 0.5:
                 source_tensor, target_tensor = torch.flip(source_tensor, (-1,)), torch.flip(target_tensor, (-1,))

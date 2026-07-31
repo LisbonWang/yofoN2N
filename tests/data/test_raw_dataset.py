@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+from torch.utils.data import DataLoader
 
 from cbct_n2n.data.raw_dataset import RawPairedSliceDataset
 
@@ -28,3 +29,6 @@ def test_raw_dataset_reads_relative_float32_paths_and_full_target(tmp_path):
 
     np.testing.assert_allclose(dataset[0]["source"][..., :3, :5], even[0][None])
     np.testing.assert_allclose(dataset[0]["target"][..., :3, :5], full[0][None])
+
+    batch = next(iter(DataLoader(dataset, batch_size=2, num_workers=0)))
+    assert batch["source"].shape == (2, 1, 32, 32)
