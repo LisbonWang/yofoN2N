@@ -629,8 +629,21 @@ def reconstruct_study(
     expected = output_names_for_mode(study.mode, options.combos, options.split_modes)
     if not options.overwrite and all((case_out / name).is_file() for name in expected) and (case_out / "metadata.json").is_file():
         record = _base_record(study, options, group)
-        record.update({"status": "success", "skipped": True,
-                       "outputs": {name: f"{rel_prefix}/{name}" for name in expected}})
+        # Inherit shape/dtype/outputs from the previous run's metadata.json so that
+        # verify_volumes can re-check the existing volumes (size check) instead of
+        # flagging them as "record missing shape/outputs" on every resumable run.
+        try:
+            import json
+            prev = json.loads((case_out / "metadata.json").read_text(encoding="utf-8"))
+            for key in ("shape", "dtype", "spacing_zyx", "outputs", "per_view_sliced",
+                        "per_view_warnings", "step_fixes", "fdk_changed", "fdk_para",
+                        "filter_file", "filter_replaced"):
+                if key in prev:
+                    record[key] = prev[key]
+        except Exception:
+            pass
+        record.setdefault("outputs", {name: f"{rel_prefix}/{name}" for name in expected})
+        record.update({"status": "success", "skipped": True})
         return record
     if not study.nviews:
         raise ValueError("study has no projections")

@@ -279,10 +279,14 @@ def test_reconstruct_study_writes_6_variants_and_fixes_step(tmp_path):
     assert record["step_fixes"]["odd"] == [("MARFI", 3, 4)]
     assert "full" not in record["step_fixes"]
 
-    # second run without overwrite skips
+    # second run without overwrite skips and inherits shape/dtype from metadata.json
     calls.clear()
     record2 = reconstruct_study(study, group, out, options, reconstruct_fn=_make_fake_reconstruct(calls))
     assert record2["skipped"] is True and calls == []
+    assert record2["status"] == "success"
+    assert record2["shape"] == record["shape"]
+    assert record2["dtype"] == record["dtype"]
+    assert record2["outputs"] == record["outputs"]
 
 
 def test_reconstruct_study_applies_group_fdk_para_and_standard_filter(tmp_path):
