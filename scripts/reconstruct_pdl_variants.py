@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -41,7 +42,10 @@ from cbct_n2n.reconstruction import (
     SUBSETS,
     VariantOptions,
     discover_studies,
+    load_index,
+    merge_index_records,
     reconstruct_study,
+    verify_volumes,
 )
 
 INDEX_NAME = "reconstruction-index.json"
@@ -100,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=None, help="Process at most this many studies (useful for smoke tests)")
     parser.add_argument("--overwrite", action="store_true", help="Reconstruct studies even if all outputs already exist")
     parser.add_argument("--continue-on-error", action="store_true", help="Keep going after a failing study")
+    parser.add_argument("--retries", type=int, default=2,
+                        help="Per-study retry count before it is reported as an error (default: 2)")
+    parser.add_argument("--no-verify", action="store_true",
+                        help="Skip checking every output volume's file size after reconstruction")
     parser.add_argument("--dry-run", action="store_true", help="Discover studies and print the plan without reconstructing")
     parser.add_argument("--keep-workspace", action="store_true",
                         help="Keep each study's temp workspace under <output>/<case>/<study>/workspace for debugging")
@@ -165,35 +173,61 @@ def main() -> int:
     )
 
     records, failures = [], 0
-    for study in studies:
-        try:
-            record = reconstruct_study(study, output_root, options, sdk=sdk)
-            records.append(record)
-            state = "skipped (complete)" if record.get("skipped") else "ok"
-            print(f"{study.case_id}/{study.study_uid}: {state}", flush=True)
-        except Exception as exc:
+    started = time.monotonic()
+    total = len(studies)
+    for i, study in enumerate(studies, 1):
+        record = None
+        last_error: str | None = None
+        for attempt in range(args.retries + 1):
+            try:
+                record = reconstruct_study(study, output_root, options, sdk=sdk)
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt < args.retries:
+                    print(f"  retry {attempt + 1}/{args.retries} after {last_error}", flush=True)
+        if record is None:
             failures += 1
-            error = f"{type(exc).__name__}: {exc}"
             records.append({"case_id": study.case_id, "study_uid": study.study_uid, "scan_id": study.scan_id,
-                            "mode": study.mode, "status": "error", "error": error})
-            print(f"{study.case_id}/{study.study_uid}: ERROR {error}", flush=True)
+                            "mode": study.mode, "status": "error", "error": last_error})
+            print(f"{study.case_id}/{study.study_uid}: ERROR {last_error}", flush=True)
             if not args.continue_on_error:
                 break
+            continue
+        records.append(record)
+        issues = [] if args.no_verify else verify_volumes(record, output_root)
+        if issues:
+            failures += 1
+            record["status"] = "verify_failed"
+            record["verify_issues"] = issues
+            print(f"{study.case_id}/{study.study_uid}: VERIFY FAILED {issues}", flush=True)
+        else:
+            state = "skipped (complete)" if record.get("skipped") else "ok"
+            print(f"{study.case_id}/{study.study_uid}: {state}", flush=True)
+        elapsed = time.monotonic() - started
+        per_study = elapsed / i
+        remaining = max(0, (total - i) * per_study)
+        print(f"  [{i}/{total}] {elapsed / 60:.1f} min elapsed, "
+              f"{per_study:.1f} s/study, ETA {remaining / 60:.1f} min", flush=True)
 
+    existing = load_index(index_path) if (index_path := output_root / INDEX_NAME).is_file() else None
+    merged_records = merge_index_records(existing.get("records", []) if existing else [], records)
     index = {
         "schema_version": 1,
         "source_root": str(args.source_root),
         "output_root": str(output_root),
         "combos": [{"tag": tag, "post_procs": chain} for tag, chain in combos],
-        "records": records,
+        "records": merged_records,
         "skipped": skipped,
     }
-    index_path = output_root / INDEX_NAME
     temporary = index_path.with_name(index_path.name + ".tmp")
     temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(index_path)
     ok = sum(1 for r in records if r.get("status") == "success")
-    print(f"Wrote {index_path}: success={ok} error={failures} skipped_studies={len(skipped)}", flush=True)
+    verify_failed = sum(1 for r in records if r.get("status") == "verify_failed")
+    print(f"Wrote {index_path}: total_records={len(merged_records)} this_run: success={ok} "
+          f"verify_failed={verify_failed} error={failures} skipped_studies={len(skipped)}", flush=True)
     return 1 if failures else 0
 
 
