@@ -81,6 +81,40 @@ python scripts\reconstruct_mode2_pairs.py --config configs\default.yaml --dry-ru
 python scripts\reconstruct_mode2_pairs.py --config configs\default.yaml
 ```
 
+### 批量 12 变体重建（AIReduceNoise）
+
+`scripts\reconstruct_pdl_variants.py` 对 PDL 数据集逐 study 重建 12 个体数据：
+full/even/odd 三个投影子集 × MARFI/BHC 四个后处理组合（`none`/`bhc`/`marfi`/`bhc_marfi`）。
+每个 study 输出到 `Z:\raid5\data_tmp\AIReduceNoise\<病例>\<study_uid>\` 下的
+`{full,even,odd}_{none,bhc,marfi,bhc_marfi}.raw`（float32），并写 `metadata.json` 与
+根目录 `reconstruction-index.json`（支持断点续跑：12 个文件齐全的 study 自动跳过）。
+
+输入布局为 `\\192.168.36.235\团队文件-牙科ct\data_raw\PDL\<病例>\<study_uid>\<序列>_ModeX_*kV*mA*/`，
+配置位于同 study 下 `config/recon/<dev>/<ModeX>/`（含 `filter.xml`、`fdkPara.xml`）。
+没有配置或无法解析 kV/mA 的 study 会被跳过并记录原因（当前 204 个 study 中 198 个可重建：
+Mode1×88、Mode2×104、Mode3×6）。
+
+重建前 raw 与 config 先拷贝到临时工作区（默认系统临时目录，`--workspace-root` 可改）；
+偶/奇子集由 `build_subset_workspace` 切出（同步更新 `fdkPara.xml/noView` 并切片逐视角二进制）。
+逐视角布局按模式区分：Mode2/Mode3 的 `projectionMatrix.bin` 为 84 字节/视角（640×84、1080×84），
+Mode1 的 `projectionMatrix.bin`（85680 字节）与视角数不匹配，按共享校准数据整份复制；
+`weightR.bin`、`defective.bin`、`offset.bin` 等始终整份复制。声明为逐视角但尺寸校验不匹配的文件
+会自动降级为整份复制并在 metadata 中记录 `per_view_warnings`，不会中断批处理。
+降采样子集按规则修正 MARFI/BHC 的 `step`：若 `step > 1` 且为奇数则向上取偶，full 不变；
+`--filter-set MODULE.FIELD=VALUE` 可对每个临时配置额外覆盖任意 filter.xml 参数。
+
+```powershell
+# dry-run：只扫描并打印计划（不重建、不写输出目录）
+python scripts\reconstruct_pdl_variants.py --dry-run
+
+# 真实批量重建（198 个 study × 12 = 2376 个体数据；先跑 --limit 1 冒烟）
+python scripts\reconstruct_pdl_variants.py --limit 1 --keep-workspace
+python scripts\reconstruct_pdl_variants.py
+
+# 只跑 Mode2，并覆盖 MARFI 参数
+python scripts\reconstruct_pdl_variants.py --mode Mode2 --filter-set MARFI.step=2
+```
+
 Training manifests, checkpoints, history, metrics, and denoised outputs remain
 local to the repository's ignored `outputs/` and `runs/` directories.
 
