@@ -101,7 +101,9 @@ def build_subset_workspace(
     if not fdk.exists():
         raise ValueError(f"Missing fdkPara.xml in {cfg_path}")
     _update_no_view(fdk, len(selected))
-    widths = per_view_files or {"projectionMatrix.bin": 21 * 4}
+    # An empty mapping is a legitimate "no per-view slicing" declaration (e.g. Mode1 keeps
+    # projectionMatrix.bin as a shared whole file); only fall back when None was passed.
+    widths = per_view_files if per_view_files is not None else {"projectionMatrix.bin": 21 * 4}
     for name, width in widths.items():
         if width is None:
             continue

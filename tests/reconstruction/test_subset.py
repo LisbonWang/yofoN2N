@@ -53,6 +53,20 @@ def test_subset_slices_explicit_per_view_weight_and_fit_data(tmp_path):
     assert struct.unpack("<4f", (out / "config" / "fitData.bin").read_bytes()) == (1.0, 101.0, 3.0, 103.0)
 
 
+def test_subset_empty_per_view_mapping_copies_binaries_whole(tmp_path):
+    """An explicit empty per-view mapping must not fall back to slicing.
+
+    Mode1 stores projectionMatrix.bin as a shared whole file whose size does not match
+    nviews x 84; passing ``per_view_files={}`` must copy it intact instead of slicing.
+    """
+    raw, cfg = _case(tmp_path, 5)
+    (cfg / "projectionMatrix.bin").write_bytes(b"shared-matrix-data")  # size != 5 x 84
+    out = tmp_path / "subset"
+    result = build_subset_workspace(raw, cfg, [1, 3], out, link_mode="copy", per_view_files={})
+    assert (out / "config" / "projectionMatrix.bin").read_bytes() == b"shared-matrix-data"
+    assert result.view_count == 2
+
+
 def test_subset_rejects_invalid_inputs(tmp_path):
     raw, cfg = _case(tmp_path, 3)
     with pytest.raises(ValueError):
