@@ -10,19 +10,17 @@ from cbct_n2n.reconstruction import (
 
 
 def _record(uid: str, status: str = "success", shape=None, dtype="<f4"):
+    names = ["even.raw", "odd.raw", "full.raw", "full.marfi.raw", "full.bhc.raw", "full.marfi.bhc.raw"]
     return {
         "case_id": "CASE-1",
         "study_uid": uid,
         "scan_id": uid,
         "mode": "Mode2",
+        "mode_fov": "Mode2_1609",
         "status": status,
         "shape": shape or [8, 6, 4],
         "dtype": dtype,
-        "outputs": {
-            f"{s}_{t}.raw": f"CASE-1/{uid}/{s}_{t}.raw"
-            for s in ("full", "even", "odd")
-            for t in ("none", "bhc", "marfi", "bhc_marfi")
-        },
+        "outputs": {name: f"Mode2_1609/CASE-1/{uid}/{name}" for name in names},
     }
 
 

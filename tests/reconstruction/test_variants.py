@@ -34,14 +34,29 @@ def _filter_xml(step: str = "2") -> str:
 </FDK_filter_config>"""
 
 
+#: per-mode (xNum, yNum, zNum) used by _make_study; 0.25mm spacing gives the
+#: real FOV suffixes: Mode1 -> 160x150 -> "1615", Mode2 -> 160x90 -> "1609",
+#: Mode3 -> 80x80 -> "0808".
+_MODE_FDK = {
+    "Mode1": (640, 640, 600),
+    "Mode2": (640, 640, 360),
+    "Mode3": (320, 320, 320),
+}
+
+
 def _make_study(tmp_path: Path, count: int = 5, step: str = "2", mode: str = "Mode2") -> Study:
     raw = tmp_path / "raw"
     cfg = tmp_path / "cfg"
-    raw.mkdir()
-    cfg.mkdir()
+    raw.mkdir(parents=True, exist_ok=True)
+    cfg.mkdir(parents=True, exist_ok=True)
     for i in range(count):
         (raw / f"{i + 1:05d}.raw").write_bytes(bytes([i]) * 64)
-    (cfg / "fdkPara.xml").write_text(f"<FDK_sys_para><noView>{count}</noView></FDK_sys_para>", encoding="utf-8")
+    x_num, y_num, z_num = _MODE_FDK[mode]
+    (cfg / "fdkPara.xml").write_text(
+        f"<FDK_sys_para><noView>{count}</noView>"
+        f"<xNum>{x_num}</xNum><yNum>{y_num}</yNum><zNum>{z_num}</zNum>"
+        f"<xSpacing>0.25</xSpacing><ySpacing>0.25</ySpacing><zSpacing>0.25</zSpacing>"
+        f"</FDK_sys_para>", encoding="utf-8")
     (cfg / "filter.xml").write_text(_filter_xml(step), encoding="utf-8")
     (cfg / "projectionMatrix.bin").write_bytes(b"".join(struct.pack("<21f", *([i] * 21)) for i in range(count)))
     (cfg / "weightR.bin").write_bytes(b"shared-calibration")
@@ -161,7 +176,26 @@ def test_discover_studies_pdl_layout(tmp_path):
     assert any("found 0" in s["reason"] for s in skipped)
 
 
-def test_reconstruct_study_writes_12_variants_and_fixes_step(tmp_path):
+def test_fov_suffix_and_mode_fov_key(tmp_path):
+    from cbct_n2n.reconstruction import fov_suffix_from_fdk, mode_fov_key
+    m1 = _make_study(tmp_path / "m1", mode="Mode1")
+    m2 = _make_study(tmp_path / "m2", mode="Mode2")
+    m3 = _make_study(tmp_path / "m3", mode="Mode3")
+    assert fov_suffix_from_fdk(m1.cfg_dir / "fdkPara.xml") == "1615"
+    assert fov_suffix_from_fdk(m2.cfg_dir / "fdkPara.xml") == "1609"
+    assert fov_suffix_from_fdk(m3.cfg_dir / "fdkPara.xml") == "0808"
+    assert mode_fov_key("Mode2", m2.cfg_dir / "fdkPara.xml") == "Mode2_1609"
+    with pytest.raises(FileNotFoundError):
+        fov_suffix_from_fdk(tmp_path / "missing.xml")
+    # missing dimension field raises ValueError
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "fdkPara.xml").write_text("<FDK_sys_para><noView>3</noView></FDK_sys_para>", encoding="utf-8")
+    with pytest.raises(ValueError):
+        fov_suffix_from_fdk(bare / "fdkPara.xml")
+
+
+def test_reconstruct_study_writes_6_variants_and_fixes_step(tmp_path):
     study = _make_study(tmp_path, count=5, step="3")
     out = tmp_path / "out"
     calls = []
@@ -169,29 +203,33 @@ def test_reconstruct_study_writes_12_variants_and_fixes_step(tmp_path):
     record = reconstruct_study(study, out, options, reconstruct_fn=_make_fake_reconstruct(calls))
 
     assert record["status"] == "success"
+    assert record["mode_fov"] == "Mode2_1609"
+    assert record["fov_suffix"] == "1609"
     assert record["shape"] == [8, 6, 4]
     assert record["spacing_zyx"] == [0.25, 0.25, 0.25]
-    assert len(record["outputs"]) == 12
+    assert len(record["outputs"]) == 6
     assert set(record["outputs"]) == {
-        f"{subset}_{tag}.raw"
-        for subset in ("full", "even", "odd")
-        for tag in ("none", "bhc", "marfi", "bhc_marfi")
+        "even.raw", "odd.raw", "full.raw",
+        "full.marfi.raw", "full.bhc.raw", "full.marfi.bhc.raw",
     }
+    # every output lives under <Mode>_<FOV>/<case_id>/<study_uid>/
     for name in record["outputs"]:
-        path = out / record["outputs"][name]
+        rel = record["outputs"][name]
+        assert rel == f"Mode2_1609/CASE-1/STUDY-1/{name}"
+        path = out / rel
         assert path.is_file() and path.stat().st_size == 8 * 6 * 4 * 4
 
-    # 12 reconstructions: 3 subsets x 4 combos
-    assert len(calls) == 12
+    # 6 reconstructions: even/odd plain only, full all four combos
+    assert len(calls) == 6
     assert sorted(c["post_procs"] for c in calls) == sorted(
-        [p for _s in range(3) for p in ("", "BHC", "MARFI", "BHC MARFI")]
+        ["", "", "", "BHC", "MARFI", "BHC MARFI"]
     )
-    # each subset reconstructed with the right view count
+    # full(5 views), even(3 views: indices 0,2,4), odd(2 views: indices 1,3)
     counts = sorted(c["raw_count"] for c in calls)
-    assert counts == [2, 2, 2, 2, 3, 3, 3, 3, 5, 5, 5, 5]
+    assert counts == [2, 3, 5, 5, 5, 5]
 
     # step fixed only for downsampled subsets; full keeps the original odd step
-    ws = out / "CASE-1" / "STUDY-1" / "workspace"
+    ws = out / "Mode2_1609" / "CASE-1" / "STUDY-1" / "workspace"
     assert _no_view(ws / "even" / "config") == 3
     assert _no_view(ws / "odd" / "config") == 2
     assert _no_view(ws / "full" / "config") == 5
@@ -217,7 +255,7 @@ def test_reconstruct_study_applies_filter_overrides_everywhere(tmp_path):
     record = reconstruct_study(study, out, options, reconstruct_fn=_make_fake_reconstruct(calls))
     assert record["status"] == "success"
     assert record["filter_set"] == {"MARFI.step": "6", "ReduceNoise.ratio": "0.5"}
-    ws = out / "CASE-1" / "STUDY-1" / "workspace"
+    ws = out / "Mode2_1609" / "CASE-1" / "STUDY-1" / "workspace"
     for subset in ("full", "even", "odd"):
         assert _marfi_step(ws / subset / "config") == 6
         assert read_module_field(ws / subset / "config", "ReduceNoise", "ratio") == "0.5"

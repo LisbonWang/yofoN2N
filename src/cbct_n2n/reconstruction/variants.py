@@ -1,10 +1,23 @@
-"""Batch CBCT reconstruction: 3 projection subsets x 4 post-processing combos = 12 volumes per study.
+"""Batch CBCT reconstruction: 6 volumes per study, stored under a ``<Mode>_<FOV>`` top-level key.
 
 Each study is a ``(raw projections, config)`` pair discovered under a source root with the
 layout used by the PDL dataset::
 
     <source_root>/<case_id>/<study_uid>/<series>_ModeX_<kv>kV<ma>mA.../<NNNNN>.raw
     <source_root>/<case_id>/<study_uid>/config/recon/<dev>/<ModeX>/filter.xml + fdkPara.xml + ...
+
+Outputs are grouped by *mode + field of view* derived from ``fdkPara.xml``
+(``xNum*xSpacing`` and ``zNum*zSpacing`` in cm, two digits each, e.g. 160x150mm -> ``1615``)::
+
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/even.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/odd.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.marfi.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.bhc.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.marfi.bhc.raw
+
+The even/odd subsets only get the plain (no post-processing) variant; the full subset gets
+all four MARFI/BHC combos (see ``OUTPUT_NAMES``).
 
 Reconstruction always works on a *temporary copy* of raw and config.  Even/odd subsets are
 built by ``build_subset_workspace`` (copies the selected projections, updates ``noView`` in
@@ -43,6 +56,17 @@ DEFAULT_COMBOS: tuple[tuple[str, str], ...] = (
     ("marfi", "MARFI"),
     ("bhc_marfi", "BHC MARFI"),
 )
+
+#: (subset, combo tag) -> output file name.  even/odd only get the plain variant;
+#: full gets all four MARFI/BHC combos.  ``bhc_marfi`` is written as ``marfi.bhc``.
+OUTPUT_NAMES: dict[tuple[str, str], str] = {
+    ("even", "none"): "even.raw",
+    ("odd", "none"): "odd.raw",
+    ("full", "none"): "full.raw",
+    ("full", "marfi"): "full.marfi.raw",
+    ("full", "bhc"): "full.bhc.raw",
+    ("full", "bhc_marfi"): "full.marfi.bhc.raw",
+}
 
 #: modules whose ``step`` must be even after projection downsampling (even/odd subsets)
 DEFAULT_STEP_MODULES = ("MARFI", "BHC")
@@ -180,6 +204,34 @@ def discover_studies(
                 nviews=_raw_file_count(raw_dir),
             ))
     return studies, skipped
+
+
+# --------------------------------------------------------------------------- FOV classification
+
+
+def fov_suffix_from_fdk(fdk_path: str | Path) -> str:
+    """Derive the 4-digit FOV suffix from a ``fdkPara.xml``.
+
+    The suffix is ``xFOV`` x ``zFOV`` in cm, two zero-padded digits each, e.g.
+    160x150 mm -> ``1615``, 160x90 mm -> ``1609``, 80x80 mm -> ``0808``.
+    """
+    tree = ET.parse(Path(fdk_path))
+    root = tree.getroot()
+
+    def _field(tag: str) -> float:
+        node = root.findtext(tag)
+        if node is None:
+            raise ValueError(f"Missing <{tag}> in {fdk_path}")
+        return float(node)
+
+    x_mm = _field("xNum") * _field("xSpacing")
+    z_mm = _field("zNum") * _field("zSpacing")
+    return f"{round(x_mm / 10):02d}{round(z_mm / 10):02d}"
+
+
+def mode_fov_key(mode: str, fdk_path: str | Path) -> str:
+    """Top-level output key, e.g. ``Mode2_1609``."""
+    return f"{mode}_{fov_suffix_from_fdk(fdk_path)}"
 
 
 # --------------------------------------------------------------------------- workspaces
@@ -396,9 +448,9 @@ def _atomic_raw(path: Path, volume: np.ndarray) -> None:
     os.replace(temporary, path)
 
 
-def _workspace_context(study: Study, output_dir: Path, options: VariantOptions):
+def _workspace_context(study: Study, output_dir: Path, options: VariantOptions, mode_fov: str):
     if options.keep_workspace:
-        parent = output_dir / study.case_id / study.study_uid / "workspace"
+        parent = output_dir / mode_fov / study.case_id / study.study_uid / "workspace"
         if parent.exists() and options.overwrite:
             shutil.rmtree(parent)
         parent.mkdir(parents=True, exist_ok=True)
@@ -414,18 +466,21 @@ def reconstruct_study(
     reconstruct_fn: Callable[..., Any] = _default_reconstruct,
     sdk: Any = None,
 ) -> dict[str, Any]:
-    """Reconstruct 12 variants (3 subsets x combos) for one study and write them to disk.
+    """Reconstruct the 6 output variants (``OUTPUT_NAMES``) for one study and write them to disk.
 
-    Returns a metadata record suitable for the batch index.  Reconstructs the full subset
-    from a plain copy of the raw/config and the even/odd subsets from sliced workspaces;
-    applies ``--filter-set`` overrides everywhere and the even-step rule to even/odd.
+    Volumes are stored under ``<output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/`` where the
+    FOV suffix is derived from the study's fdkPara.xml.  Reconstructs the full subset from a
+    plain copy of the raw/config and the even/odd subsets from sliced workspaces; applies
+    ``--filter-set`` overrides everywhere and the even-step rule to even/odd.
     """
     output_root = Path(output_dir)
-    case_out = output_root / study.case_id / study.study_uid
-    expected = [f"{subset}_{tag}.raw" for subset in SUBSETS for tag, _ in options.combos]
+    mode_fov = mode_fov_key(study.mode, study.cfg_dir / "fdkPara.xml")
+    case_out = output_root / mode_fov / study.case_id / study.study_uid
+    expected = list(OUTPUT_NAMES.values())
     if not options.overwrite and all((case_out / name).is_file() for name in expected) and (case_out / "metadata.json").is_file():
-        record = _base_record(study, options)
-        record.update({"status": "success", "skipped": True, "outputs": {name: f"{study.case_id}/{study.study_uid}/{name}" for name in expected}})
+        record = _base_record(study, options, mode_fov)
+        record.update({"status": "success", "skipped": True,
+                       "outputs": {name: f"{mode_fov}/{study.case_id}/{study.study_uid}/{name}" for name in expected}})
         return record
     if not study.nviews:
         raise ValueError("study has no projections")
@@ -436,7 +491,7 @@ def reconstruct_study(
     per_view, per_view_warnings = validated_per_view(
         study.cfg_dir, study.nviews, options.per_view_files.get(study.mode, {})
     )
-    workspace = _workspace_context(study, output_root, options)
+    workspace = _workspace_context(study, output_root, options, mode_fov)
     try:
         full_raw, full_cfg = build_full_workspace(study.raw_dir, study.cfg_dir, workspace / "full", options.link_mode)
         even_indices, odd_indices = split_projection_indices(study.nviews)
@@ -454,9 +509,12 @@ def reconstruct_study(
                     step_fixes[subset] = fixes
 
         common = dict(xday_install_dir=options.xday_dir, dtype=options.dtype, show_progress=False, sdk=sdk)
+        wanted = set(OUTPUT_NAMES)
         results: dict[tuple[str, str], Any] = {}
         for subset, (_raw, _cfg) in workspaces.items():
             for tag, chain in options.combos:
+                if (subset, tag) not in wanted:
+                    continue
                 results[(subset, tag)] = reconstruct_fn(_raw, _cfg, study.kv, study.ma, post_procs=chain, **common)
 
         shapes = {key: tuple(int(v) for v in result.volume.shape) for key, result in results.items()}
@@ -471,17 +529,17 @@ def reconstruct_study(
 
         outputs: dict[str, str] = {}
         for (subset, tag), result in results.items():
-            name = f"{subset}_{tag}.raw"
+            name = OUTPUT_NAMES[(subset, tag)]
             _atomic_raw(case_out / name, result.volume)
-            outputs[name] = f"{study.case_id}/{study.study_uid}/{name}"
+            outputs[name] = f"{mode_fov}/{study.case_id}/{study.study_uid}/{name}"
 
-        record = _base_record(study, options)
+        record = _base_record(study, options, mode_fov)
         record.update({
             "status": "success",
             "skipped": False,
-            "shape": list(shapes["full", options.combos[0][0]]),
+            "shape": list(shapes["full", "none"]),
             "dtype": "<f4",
-            "spacing_zyx": spacings[f"full_{options.combos[0][0]}"],
+            "spacing_zyx": spacings["full_none"],
             "outputs": outputs,
             "step_fixes": step_fixes,
             "filter_set": dict(options.filter_set),
@@ -495,8 +553,8 @@ def reconstruct_study(
             shutil.rmtree(workspace, ignore_errors=True)
 
 
-def _base_record(study: Study, options: VariantOptions) -> dict[str, Any]:
-    return {
+def _base_record(study: Study, options: VariantOptions, mode_fov: str | None = None) -> dict[str, Any]:
+    record = {
         "case_id": study.case_id,
         "study_uid": study.study_uid,
         "scan_id": study.scan_id,
@@ -510,6 +568,10 @@ def _base_record(study: Study, options: VariantOptions) -> dict[str, Any]:
         "even_views": len(split_projection_indices(study.nviews)[0]),
         "odd_views": len(split_projection_indices(study.nviews)[1]),
     }
+    if mode_fov is not None:
+        record["mode_fov"] = mode_fov
+        record["fov_suffix"] = mode_fov.split("_", 1)[1]
+    return record
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:

@@ -1,9 +1,14 @@
-"""Batch CBCT reconstruction of PDL studies into 12 variants each.
+"""Batch CBCT reconstruction of PDL studies into 6 output variants each.
 
-Each study (raw projections + config) is reconstructed as full / even / odd subsets and,
-for every subset, with the four MARFI/BHC post-processing combos, yielding 12 volumes::
+Each study (raw projections + config) is reconstructed as full / even / odd subsets.
+The even/odd subsets only get the plain (no post-processing) variant while the full
+subset gets all four MARFI/BHC combos, yielding 6 volumes per study::
 
-    <output_root>/<case_id>/<study_uid>/{full,even,odd}_{none,bhc,marfi,bhc_marfi}.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/{even,odd,full}.raw
+    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.{marfi,bhc,marfi.bhc}.raw
+
+The ``<Mode>_<FOV>`` top-level key is derived from fdkPara.xml (mode name plus the
+xFOV x zFOV in cm, e.g. Mode2_1609, Mode1_1615, Mode3_0808).
 
 Raw and config are first copied to a temp workspace; even/odd subsets slice the projections
 and per-view binaries and update ``noView``.  For downsampled subsets the MARFI/BHC ``step``
@@ -39,11 +44,12 @@ from cbct_n2n.reconstruction import (
     DEFAULT_COMBOS,
     DEFAULT_PER_VIEW_FILES,
     DEFAULT_STEP_MODULES,
-    SUBSETS,
+    OUTPUT_NAMES,
     VariantOptions,
     discover_studies,
     load_index,
     merge_index_records,
+    mode_fov_key,
     reconstruct_study,
     verify_volumes,
 )
@@ -75,15 +81,15 @@ def _parse_filter_set(spec: str) -> tuple[str, str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Batch CBCT reconstruction: 3 subsets x 4 MARFI/BHC combos = 12 volumes per study.",
+        description="Batch CBCT reconstruction: 6 output variants per study, grouped by <Mode>_<FOV>.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--source-root", type=Path,
                         default=r"\\192.168.36.235\团队文件-牙科ct\data_raw\PDL",
                         help="Root containing <case>/<study>/<series>_ModeX_*kV*mA* raw dirs and config/")
     parser.add_argument("--output-root", type=Path,
-                        default=r"Z:\raid5\data_tmp\AIReduceNoise",
-                        help="Where <case_id>/<study_uid>/*.raw volumes are written")
+                        default=r"Z:\raid0\yyc\AIReduceNoise",
+                        help="Where <Mode>_<FOV>/<case_id>/<study_uid>/*.raw volumes are written")
     parser.add_argument("--xday-dir", type=Path, default=Path(os.environ.get("XDAY_DIR", "D:\\XDay Release\\XDay617.2")),
                         help="XDay SDK directory (xday.dll + dependencies)")
     parser.add_argument("--combo", action="append", metavar="TAG=CHAIN", default=None,
@@ -143,10 +149,15 @@ def main() -> int:
 
     print(f"Discovered {len(studies)} study(ies), skipped {len(skipped)} without usable config/kV-mA", flush=True)
     for study in studies:
-        print(f"  {study.case_id}/{study.study_uid}\t{study.mode}\t{study.nviews} views\t{study.kv}kV {study.ma}mA\t{study.raw_dir.name}", flush=True)
+        try:
+            key = mode_fov_key(study.mode, study.cfg_dir / "fdkPara.xml")
+        except Exception:
+            key = f"{study.mode}_?"
+        print(f"  {key:<14} {study.case_id}/{study.study_uid}\t{study.mode}\t{study.nviews} views\t"
+              f"{study.kv}kV {study.ma}mA\t{study.raw_dir.name}", flush=True)
     if args.dry_run:
-        print(f"Dry run: {len(studies)} study(ies) x {len(combos)} combos x {len(SUBSETS)} subsets = "
-              f"{len(studies) * len(combos) * len(SUBSETS)} volumes would be reconstructed.", flush=True)
+        print(f"Dry run: {len(studies)} study(ies) x {len(OUTPUT_NAMES)} variants = "
+              f"{len(studies) * len(OUTPUT_NAMES)} volumes would be reconstructed.", flush=True)
         return 0
 
     output_root = args.output_root.resolve()
