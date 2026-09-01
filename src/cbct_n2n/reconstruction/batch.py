@@ -31,18 +31,24 @@ def load_index(index_path: str | Path) -> dict[str, Any] | None:
 
 
 def merge_index_records(existing: list[dict[str, Any]], fresh: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge batch records keyed by ``study_uid``; fresh records win.
+    """Merge batch records keyed by ``(study_uid, group)``; fresh records win.
 
-    Keeps the original order of the existing list, appends new study uids at the
-    end, and replaces records whose study was re-processed in this run.
+    A study can be reconstructed into several recon groups, so the merge key is the
+    ``study_uid`` *plus* the ``group`` name (records without a group fall back to the
+    study uid alone).  Keeps the original order of the existing list, appends new keys at
+    the end, and replaces records whose (study, group) was re-processed in this run.
     """
-    by_uid = {str(r.get("study_uid")): r for r in existing if isinstance(r, dict) and r.get("study_uid")}
+    def key(r: dict[str, Any]) -> str:
+        uid = str(r.get("study_uid")) if r.get("study_uid") else ""
+        group = str(r.get("group")) if r.get("group") else ""
+        return f"{uid}\x1f{group}"
+
+    by_key = {key(r): r for r in existing if isinstance(r, dict) and r.get("study_uid")}
     for r in fresh:
-        uid = r.get("study_uid") if isinstance(r, dict) else None
-        if not uid:
+        if not isinstance(r, dict) or not r.get("study_uid"):
             continue
-        by_uid[str(uid)] = r
-    return list(by_uid.values())
+        by_key[key(r)] = r
+    return list(by_key.values())
 
 
 def verify_volumes(record: dict[str, Any], output_root: str | Path) -> list[str]:

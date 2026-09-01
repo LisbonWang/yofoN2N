@@ -1,18 +1,24 @@
-"""Batch CBCT reconstruction of PDL studies into 6 output variants each.
+"""Batch CBCT reconstruction of PDL studies into 6 output variants per recon group.
 
-Each study (raw projections + config) is reconstructed as full / even / odd subsets.
-The even/odd subsets only get the plain (no post-processing) variant while the full
-subset gets all four MARFI/BHC combos, yielding 6 volumes per study::
+Each study (raw projections + config) is reconstructed once per matching *recon group*
+(see ``configs/recon_groups.json``): a group lists the scan modes it applies to, the
+fdkPara.xml geometry to overwrite, and the *standard* filter.xml file to use (the file is
+copied verbatim, no runtime parameter overrides), so the same scan can be rebuilt at
+multiple FOVs.  A Mode2 study, for example, is rebuilt both as ``Mode2_1609`` (native) and
+``Mode2_0808`` (patched to an 80x80mm volume)::
 
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/{even,odd,full}.raw
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.{marfi,bhc,marfi.bhc}.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/{even,odd,full}.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/full.{marfi,bhc,marfi.bhc}.raw
 
-The ``<Mode>_<FOV>`` top-level key is derived from fdkPara.xml (mode name plus the
-xFOV x zFOV in cm, e.g. Mode2_1609, Mode1_1615, Mode3_0808).
+The top-level ``<source>`` directory is the source root name (``PDL`` by default).  Any
+``Mode<N>`` is accepted (Mode0 included); modes without a matching group are reported as
+skipped.
 
-Raw and config are first copied to a temp workspace; even/odd subsets slice the projections
-and per-view binaries and update ``noView``.  For downsampled subsets the MARFI/BHC ``step``
-parameter is rounded up to an even value when it is > 1 (see ``fix_subsample_step``).
+Raw and config are first copied to a temp workspace (deleted when the study finishes);
+even/odd subsets slice the projections and per-view binaries and update ``noView``.  The
+group's fdkPara geometry and standard filter file are applied to every subset's config
+copy.  For downsampled subsets the MARFI/BHC ``step`` parameter is rounded up to an even
+value when it is > 1 (see ``fix_subsample_step``).
 
 Examples
 --------
@@ -24,9 +30,9 @@ Real batch::
 
     python scripts\\reconstruct_pdl_variants.py
 
-With extra filter.xml overrides (repeatable)::
+Only one group::
 
-    python scripts\\reconstruct_pdl_variants.py --filter-set MARFI.step=2 --filter-set BHC.boneThresLow=0.25
+    python scripts\\reconstruct_pdl_variants.py --groups Mode2_0808
 """
 
 from __future__ import annotations
@@ -47,14 +53,16 @@ from cbct_n2n.reconstruction import (
     OUTPUT_NAMES,
     VariantOptions,
     discover_studies,
+    groups_for_mode,
     load_index,
+    load_recon_groups,
     merge_index_records,
-    mode_fov_key,
     reconstruct_study,
     verify_volumes,
 )
 
 INDEX_NAME = "reconstruction-index.json"
+DEFAULT_GROUPS_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "recon_groups.json"
 
 
 def _parse_combo(spec: str) -> tuple[str, str]:
@@ -72,13 +80,6 @@ def _parse_per_view(spec: str) -> tuple[str, int]:
         raise SystemExit(f"--per-view-file must be NAME=BYTES, got {spec!r}") from exc
 
 
-def _parse_filter_set(spec: str) -> tuple[str, str]:
-    key, sep, value = spec.partition("=")
-    if not sep:
-        raise SystemExit(f"--filter-set must be MODULE.FIELD=VALUE, got {spec!r}")
-    return key, value
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Batch CBCT reconstruction: 6 output variants per study, grouped by <Mode>_<FOV>.",
@@ -89,7 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Root containing <case>/<study>/<series>_ModeX_*kV*mA* raw dirs and config/")
     parser.add_argument("--output-root", type=Path,
                         default=r"Z:\raid0\yyc\AIReduceNoise",
-                        help="Where <Mode>_<FOV>/<case_id>/<study_uid>/*.raw volumes are written")
+                        help="Where <source>/<Mode>_<FOV>/<case_id>/<study_uid>/*.raw volumes are written "
+                             "(top-level <source> defaults to the source root name, e.g. PDL)")
     parser.add_argument("--xday-dir", type=Path, default=Path(os.environ.get("XDAY_DIR", "D:\\XDay Release\\XDay617.2")),
                         help="XDay SDK directory (xday.dll + dependencies)")
     parser.add_argument("--combo", action="append", metavar="TAG=CHAIN", default=None,
@@ -99,12 +101,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="How raw projections are placed into the temp workspace")
     parser.add_argument("--per-view-file", action="append", metavar="NAME=BYTES", default=None,
                         help="Ancillary per-view binary width to slice in subsets; repeatable. "
-                             "Default by mode: Mode2/Mode3 projectionMatrix.bin=84, Mode1 none")
-    parser.add_argument("--filter-set", action="append", metavar="MODULE.FIELD=VALUE", default=None,
-                        help="Override a filter.xml parameter in every temp config; repeatable, e.g. MARFI.step=2")
+                             "Default by mode: Mode2/Mode3 projectionMatrix.bin=84, Mode1 none; "
+                             "modes without an entry (e.g. Mode0) copy such files whole")
     parser.add_argument("--step-modules", default=",".join(DEFAULT_STEP_MODULES),
                         help="Comma-separated modules whose step must stay even for downsampled subsets")
     parser.add_argument("--mode", default=None, help="Only reconstruct studies of this mode, e.g. Mode2")
+    parser.add_argument("--groups-config", type=Path, default=DEFAULT_GROUPS_CONFIG,
+                        help="JSON file defining the reconstruction groups (source modes + fdkPara geometry + standard filter file)")
+    parser.add_argument("--groups", default=None,
+                        help="Comma-separated subset of group names to reconstruct (default: all groups matching each study's mode)")
     parser.add_argument("--kv", type=float, default=None, help="Override tube kV for all studies")
     parser.add_argument("--ma", type=float, default=None, help="Override tube mA for all studies")
     parser.add_argument("--limit", type=int, default=None, help="Process at most this many studies (useful for smoke tests)")
@@ -135,8 +140,14 @@ def main() -> int:
         name, width = _parse_per_view(spec)
         for mode_files in per_view_files.values():
             mode_files[name] = width
-    filter_set = dict(_parse_filter_set(spec) for spec in args.filter_set or [])
     step_modules = tuple(m.strip() for m in args.step_modules.split(",") if m.strip())
+    groups = load_recon_groups(args.groups_config)
+    selected_names = set(args.groups.split(",")) if args.groups else None
+    if selected_names is not None:
+        missing = selected_names - set(groups)
+        if missing:
+            raise SystemExit(f"unknown groups: {sorted(missing)}; available: {sorted(groups)}")
+        groups = {name: g for name, g in groups.items() if name in selected_names}
 
     studies, skipped = discover_studies(
         args.source_root,
@@ -147,17 +158,26 @@ def main() -> int:
     if args.limit is not None:
         studies = studies[: args.limit]
 
-    print(f"Discovered {len(studies)} study(ies), skipped {len(skipped)} without usable config/kV-mA", flush=True)
+    # (study, group) work items; studies whose mode matches no group are reported as skipped
+    work: list[tuple[Any, Any]] = []
     for study in studies:
-        try:
-            key = mode_fov_key(study.mode, study.cfg_dir / "fdkPara.xml")
-        except Exception:
-            key = f"{study.mode}_?"
-        print(f"  {key:<14} {study.case_id}/{study.study_uid}\t{study.mode}\t{study.nviews} views\t"
+        matched = groups_for_mode(groups, study.mode)
+        if not matched:
+            skipped.append({"case_id": study.case_id, "study_uid": study.study_uid,
+                            "reason": f"mode {study.mode} matches no recon group"})
+            continue
+        for group in matched:
+            work.append((study, group))
+
+    print(f"Discovered {len(studies)} study(ies) -> {len(work)} (study, group) item(s), "
+          f"skipped {len(skipped)} without usable config/kV-mA or matching group", flush=True)
+    top_dir = Path(args.source_root).name or "SOURCE"
+    for study, group in work:
+        print(f"  {top_dir}/{group.name:<14} {study.case_id}/{study.study_uid}\t{study.mode}\t{study.nviews} views\t"
               f"{study.kv}kV {study.ma}mA\t{study.raw_dir.name}", flush=True)
     if args.dry_run:
-        print(f"Dry run: {len(studies)} study(ies) x {len(OUTPUT_NAMES)} variants = "
-              f"{len(studies) * len(OUTPUT_NAMES)} volumes would be reconstructed.", flush=True)
+        print(f"Dry run: {len(work)} (study, group) item(s) x {len(OUTPUT_NAMES)} variants = "
+              f"{len(work) * len(OUTPUT_NAMES)} volumes would be reconstructed.", flush=True)
         return 0
 
     output_root = args.output_root.resolve()
@@ -174,24 +194,24 @@ def main() -> int:
         dtype=args.dtype,
         link_mode=args.link_mode,
         per_view_files=per_view_files,
-        filter_set=filter_set,
         step_modules=step_modules,
         kv=args.kv,
         ma=args.ma,
         overwrite=args.overwrite,
         keep_workspace=args.keep_workspace,
         workspace_root=args.workspace_root,
+        top_dir=top_dir,
     )
 
     records, failures = [], 0
     started = time.monotonic()
-    total = len(studies)
-    for i, study in enumerate(studies, 1):
+    total = len(work)
+    for i, (study, group) in enumerate(work, 1):
         record = None
         last_error: str | None = None
         for attempt in range(args.retries + 1):
             try:
-                record = reconstruct_study(study, output_root, options, sdk=sdk)
+                record = reconstruct_study(study, group, output_root, options, sdk=sdk)
                 last_error = None
                 break
             except Exception as exc:
@@ -201,8 +221,8 @@ def main() -> int:
         if record is None:
             failures += 1
             records.append({"case_id": study.case_id, "study_uid": study.study_uid, "scan_id": study.scan_id,
-                            "mode": study.mode, "status": "error", "error": last_error})
-            print(f"{study.case_id}/{study.study_uid}: ERROR {last_error}", flush=True)
+                            "mode": study.mode, "group": group.name, "status": "error", "error": last_error})
+            print(f"{study.case_id}/{study.study_uid} [{group.name}]: ERROR {last_error}", flush=True)
             if not args.continue_on_error:
                 break
             continue
@@ -212,15 +232,15 @@ def main() -> int:
             failures += 1
             record["status"] = "verify_failed"
             record["verify_issues"] = issues
-            print(f"{study.case_id}/{study.study_uid}: VERIFY FAILED {issues}", flush=True)
+            print(f"{study.case_id}/{study.study_uid} [{group.name}]: VERIFY FAILED {issues}", flush=True)
         else:
             state = "skipped (complete)" if record.get("skipped") else "ok"
-            print(f"{study.case_id}/{study.study_uid}: {state}", flush=True)
+            print(f"{study.case_id}/{study.study_uid} [{group.name}]: {state}", flush=True)
         elapsed = time.monotonic() - started
-        per_study = elapsed / i
-        remaining = max(0, (total - i) * per_study)
+        per_item = elapsed / i
+        remaining = max(0, (total - i) * per_item)
         print(f"  [{i}/{total}] {elapsed / 60:.1f} min elapsed, "
-              f"{per_study:.1f} s/study, ETA {remaining / 60:.1f} min", flush=True)
+              f"{per_item:.1f} s/item, ETA {remaining / 60:.1f} min", flush=True)
 
     existing = load_index(index_path) if (index_path := output_root / INDEX_NAME).is_file() else None
     merged_records = merge_index_records(existing.get("records", []) if existing else [], records)
@@ -228,6 +248,7 @@ def main() -> int:
         "schema_version": 1,
         "source_root": str(args.source_root),
         "output_root": str(output_root),
+        "groups_config": str(args.groups_config),
         "combos": [{"tag": tag, "post_procs": chain} for tag, chain in combos],
         "records": merged_records,
         "skipped": skipped,

@@ -9,18 +9,19 @@ from cbct_n2n.reconstruction import (
 )
 
 
-def _record(uid: str, status: str = "success", shape=None, dtype="<f4"):
+def _record(uid: str, status: str = "success", shape=None, dtype="<f4", group: str = "Mode2_1609"):
     names = ["even.raw", "odd.raw", "full.raw", "full.marfi.raw", "full.bhc.raw", "full.marfi.bhc.raw"]
     return {
         "case_id": "CASE-1",
         "study_uid": uid,
         "scan_id": uid,
         "mode": "Mode2",
-        "mode_fov": "Mode2_1609",
+        "group": group,
+        "top_dir": "PDL",
         "status": status,
         "shape": shape or [8, 6, 4],
         "dtype": dtype,
-        "outputs": {name: f"Mode2_1609/CASE-1/{uid}/{name}" for name in names},
+        "outputs": {name: f"PDL/{group}/CASE-1/{uid}/{name}" for name in names},
     }
 
 
@@ -54,6 +55,23 @@ def test_merge_index_records_fresh_wins_and_order_preserved():
     assert [r["study_uid"] for r in merged2] == ["A", "B", "C"]
     # non-dict / no-uid entries are dropped
     assert merge_index_records([{"study_uid": "A"}, "junk", {"no_uid": 1}], []) == [{"study_uid": "A"}]
+
+
+def test_merge_index_records_keys_by_study_plus_group():
+    """One study rebuilt into several groups yields one record per (study, group)."""
+    existing = [_record("S", group="Mode2_1609"), _record("S", group="Mode2_0808")]
+    fresh = [_record("S", group="Mode2_0808", status="error", shape=None)]
+    merged = merge_index_records(existing, fresh)
+    assert len(merged) == 2
+    by_group = {r["group"]: r["status"] for r in merged}
+    assert by_group == {"Mode2_1609": "success", "Mode2_0808": "error"}
+    # fresh record for another group appends
+    merged2 = merge_index_records(merged, [_record("T", group="Mode2_1609")])
+    assert len(merged2) == 3
+    # legacy records without a group merge under the uid-only key
+    legacy = [{"study_uid": "S", "status": "old"}]
+    merged3 = merge_index_records([], legacy + [_record("S", group="Mode2_1609")])
+    assert len(merged3) == 2
 
 
 def test_verify_volumes_ok(tmp_path):

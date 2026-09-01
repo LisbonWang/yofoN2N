@@ -1,4 +1,4 @@
-"""Batch CBCT reconstruction: 6 volumes per study, stored under a ``<Mode>_<FOV>`` top-level key.
+"""Batch CBCT reconstruction: 6 volumes per study per recon group.
 
 Each study is a ``(raw projections, config)`` pair discovered under a source root with the
 layout used by the PDL dataset::
@@ -6,23 +6,33 @@ layout used by the PDL dataset::
     <source_root>/<case_id>/<study_uid>/<series>_ModeX_<kv>kV<ma>mA.../<NNNNN>.raw
     <source_root>/<case_id>/<study_uid>/config/recon/<dev>/<ModeX>/filter.xml + fdkPara.xml + ...
 
-Outputs are grouped by *mode + field of view* derived from ``fdkPara.xml``
-(``xNum*xSpacing`` and ``zNum*zSpacing`` in cm, two digits each, e.g. 160x150mm -> ``1615``)::
+Reconstruction happens per *group* (see ``configs/recon_groups.json``).  A group defines a
+target geometry (fdkPara.xml field values) plus optional filter.xml overrides, and lists the
+scan modes it applies to.  A study is reconstructed once for every group whose
+``source_modes`` contains the study's mode — e.g. a Mode2 study is rebuilt both as
+``Mode2_1609`` (native) and ``Mode2_0808`` (fdkPara patched to an 80x80mm volume)::
 
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/even.raw
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/odd.raw
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.raw
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.marfi.raw
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.bhc.raw
-    <output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/full.marfi.bhc.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/even.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/odd.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/full.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/full.marfi.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/full.bhc.raw
+    <output_root>/<source>/<group>/<case_id>/<study_uid>/full.marfi.bhc.raw
+
+Any ``Mode<N>`` is supported (Mode0 included): the mode token is read from the scan/config
+directory names via a ``Mode\\d+`` regex, and modes without an entry in
+``DEFAULT_PER_VIEW_FILES`` simply get no per-view slicing (ancillary binaries are copied
+whole), which is the safe fallback for unknown layouts.
 
 The even/odd subsets only get the plain (no post-processing) variant; the full subset gets
 all four MARFI/BHC combos (see ``OUTPUT_NAMES``).
 
-Reconstruction always works on a *temporary copy* of raw and config.  Even/odd subsets are
-built by ``build_subset_workspace`` (copies the selected projections, updates ``noView`` in
-fdkPara.xml, slices per-view binaries such as ``projectionMatrix.bin``).  The full subset is a
-plain copy whose ``noView`` is normalized to the actual projection count.
+Reconstruction always works on a *temporary copy* of raw and config; the copy is deleted when
+the study finishes (or with ``keep_workspace`` it is kept for debugging).  Even/odd subsets
+are built by ``build_subset_workspace`` (copies the selected projections, updates ``noView``
+in fdkPara.xml, slices per-view binaries such as ``projectionMatrix.bin``).  The full subset
+is a plain copy whose ``noView`` is normalized to the actual projection count.  The group's
+``fdk_para`` and ``filter`` overrides are then applied to every subset's config copy.
 
 MARFI/BHC post-processing is controlled by the ``--post-procs`` chain of ``xday``; the four
 combos are produced by toggling BHC and MARFI.  For downsampled (even/odd) subsets, the
@@ -32,6 +42,7 @@ config copy is patched accordingly before reconstruction.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -73,6 +84,8 @@ DEFAULT_STEP_MODULES = ("MARFI", "BHC")
 
 #: per-view binary files sliced per projection index, keyed by scan mode.  Mode1 stores
 #: projectionMatrix.bin as a shared/whole file (size != 1046 x 84), so it is copied intact.
+#: Modes not listed here (e.g. a future Mode0) get no per-view slicing and copy such files
+#: whole as well — the safe fallback for unknown layouts.
 DEFAULT_PER_VIEW_FILES: dict[str, dict[str, int]] = {
     "Mode1": {},
     "Mode2": {"projectionMatrix.bin": 21 * 4},
@@ -108,13 +121,71 @@ class VariantOptions:
     dtype: str = "float32"
     link_mode: str = "copy"
     per_view_files: dict[str, dict[str, int]] = field(default_factory=lambda: {m: dict(v) for m, v in DEFAULT_PER_VIEW_FILES.items()})
-    filter_set: dict[str, str] = field(default_factory=dict)
     step_modules: tuple[str, ...] = DEFAULT_STEP_MODULES
     kv: float | None = None
     ma: float | None = None
     overwrite: bool = False
     keep_workspace: bool = False
     workspace_root: str | Path | None = None
+    #: top-level output directory name (e.g. ``PDL``, taken from the source root name by the CLI).
+    #: ``None`` keeps the legacy flat layout without a top-level source directory.
+    top_dir: str | None = None
+
+
+@dataclass(frozen=True)
+class ReconGroup:
+    """One reconstruction group: a target geometry plus the scan modes it applies to.
+
+    ``name`` is the output directory key below ``top_dir`` (e.g. ``Mode2_0808``).
+    ``source_modes`` lists the scan modes whose studies are rebuilt for this group.
+    ``fdk_para`` maps fdkPara.xml field name -> target value (applied to every subset's
+    config copy).  ``filter_file`` is the absolute path of the group's *standard*
+    filter.xml: the file is copied verbatim into every subset's config, replacing the
+    source one.  ``None`` keeps the source study's filter.xml untouched (safe fallback
+    when no standard file exists yet, e.g. Mode0).
+    """
+
+    name: str
+    source_modes: tuple[str, ...]
+    fdk_para: dict[str, float]
+    filter_file: str | None
+
+    def applies_to(self, mode: str) -> bool:
+        return any(m.casefold() == mode.casefold() for m in self.source_modes)
+
+
+def load_recon_groups(path: str | Path) -> dict[str, ReconGroup]:
+    """Load group definitions from a JSON file; return ``{name: ReconGroup}``.
+
+    The file layout is ``{"schema_version": 1, "groups": {name: {source_modes, fdk_para,
+    filter_file}}}``.  Field values in ``fdk_para`` are coerced to float.  ``filter_file``
+    may be ``null`` (no standard file) or a path relative to the JSON file's directory,
+    which is resolved to an absolute path and must exist.
+    """
+    cfg_path = Path(path)
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    if raw.get("schema_version") != 1:
+        raise ValueError(f"unsupported recon groups schema: {raw.get('schema_version')!r}")
+    groups: dict[str, ReconGroup] = {}
+    for name, spec in raw.get("groups", {}).items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"group {name!r}: expected an object, got {type(spec).__name__}")
+        modes = tuple(spec.get("source_modes", ()))
+        if not modes:
+            raise ValueError(f"group {name!r}: empty source_modes")
+        fdk = {str(k): float(v) for k, v in spec.get("fdk_para", {}).items()}
+        filter_file = spec.get("filter_file")
+        if filter_file is not None:
+            filter_file = (cfg_path.parent / str(filter_file)).resolve()
+            if not filter_file.is_file():
+                raise ValueError(f"group {name!r}: filter_file not found: {filter_file}")
+        groups[name] = ReconGroup(name=name, source_modes=modes, fdk_para=fdk, filter_file=str(filter_file) if filter_file else None)
+    return groups
+
+
+def groups_for_mode(groups: dict[str, ReconGroup], mode: str) -> list[ReconGroup]:
+    """Return the groups that apply to *mode*, in file order."""
+    return [g for g in groups.values() if g.applies_to(mode)]
 
 
 # --------------------------------------------------------------------------- discovery
@@ -401,34 +472,44 @@ def fix_subsample_step(cfg_dir: str | Path, modules: Iterable[str] = DEFAULT_STE
     return changes
 
 
-def apply_filter_overrides(cfg_dir: str | Path, overrides: dict[str, str]) -> list[tuple[str, str]]:
-    """Apply ``MODULE.FIELD=value`` overrides to the workspace filter.xml copy."""
-    applied: list[tuple[str, str]] = []
+def apply_fdk_para(cfg_dir: str | Path, overrides: dict[str, float]) -> list[str]:
+    """Overwrite fdkPara.xml fields (e.g. ``xNum``, ``zSpacing``) in a workspace copy.
 
-    def patch(text: str) -> str:
-        out = text
-        for key, value in overrides.items():
-            module_name, sep, field_name = key.partition(".")
-            if not sep or not field_name:
-                raise ValueError(f"override must be MODULE.FIELD=value, got {key!r}")
-            found_module = False
-            for match in reversed(_find_module_blocks(out, module_name)):
-                found_module = True
-                body = match.group("body")
-                field_pattern = re.compile(rf"<{re.escape(field_name)}(?:\s[^>]*)?>.*?</{re.escape(field_name)}>", re.DOTALL | re.IGNORECASE)
-                field_match = field_pattern.search(body)
-                if field_match:
-                    new_body = body[: field_match.start()] + f"<{field_name}>{value}</{field_name}>" + body[field_match.end():]
-                else:
-                    new_body = body + f"<{field_name}>{value}</{field_name}>"
-                out = out[: match.start()] + match.group("open") + new_body + match.group("close") + out[match.end():]
-            if not found_module:
-                raise ValueError(f"module {module_name!r} not found in filter.xml")
-            applied.append((key, str(value)))
-        return out
+    Only the fields present in *overrides* are touched; the rest of the file is preserved
+    byte-for-byte (via a single text replacement per field).  Returns the field names that
+    were actually replaced.  A field missing from fdkPara.xml raises ``ValueError``.
+    """
+    path = Path(cfg_dir) / "fdkPara.xml"
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing fdkPara.xml in {cfg_dir}")
+    text = path.read_text(encoding="utf-8")
+    changed: list[str] = []
+    for name, value in overrides.items():
+        pattern = re.compile(rf"<{re.escape(name)}(?:\s[^>]*)?>.*?</{re.escape(name)}>", re.DOTALL)
+        if not pattern.search(text):
+            raise ValueError(f"field <{name}> not found in fdkPara.xml")
+        text = pattern.sub(f"<{name}>{value:g}</{name}>", text)
+        changed.append(name)
+    if changed:
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(path)
+    return changed
 
-    _patch_filter_xml(cfg_dir, patch)
-    return applied
+
+def apply_filter_file(cfg_dir: str | Path, filter_file: str | Path) -> bool:
+    """Replace the workspace filter.xml copy with the group's standard file.
+
+    The standard file is copied verbatim (no runtime parameter overrides); returns
+    ``True`` when the copy actually replaced the existing filter.xml.
+    """
+    target = Path(cfg_dir) / "filter.xml"
+    source = Path(filter_file)
+    if not source.is_file():
+        raise ValueError(f"standard filter file not found: {source}")
+    same = target.is_file() and target.read_bytes() == source.read_bytes()
+    shutil.copy2(source, target)
+    return not same
 
 
 # --------------------------------------------------------------------------- orchestration
@@ -448,9 +529,9 @@ def _atomic_raw(path: Path, volume: np.ndarray) -> None:
     os.replace(temporary, path)
 
 
-def _workspace_context(study: Study, output_dir: Path, options: VariantOptions, mode_fov: str):
+def _workspace_context(study: Study, output_dir: Path, options: VariantOptions, prefix_parts: list[str]):
     if options.keep_workspace:
-        parent = output_dir / mode_fov / study.case_id / study.study_uid / "workspace"
+        parent = output_dir.joinpath(*prefix_parts) / "workspace"
         if parent.exists() and options.overwrite:
             shutil.rmtree(parent)
         parent.mkdir(parents=True, exist_ok=True)
@@ -460,27 +541,35 @@ def _workspace_context(study: Study, output_dir: Path, options: VariantOptions, 
 
 def reconstruct_study(
     study: Study,
+    group: ReconGroup,
     output_dir: str | Path,
     options: VariantOptions,
     *,
     reconstruct_fn: Callable[..., Any] = _default_reconstruct,
     sdk: Any = None,
 ) -> dict[str, Any]:
-    """Reconstruct the 6 output variants (``OUTPUT_NAMES``) for one study and write them to disk.
+    """Reconstruct the 6 output variants (``OUTPUT_NAMES``) of one study for one group.
 
-    Volumes are stored under ``<output_root>/<Mode>_<FOV>/<case_id>/<study_uid>/`` where the
-    FOV suffix is derived from the study's fdkPara.xml.  Reconstructs the full subset from a
-    plain copy of the raw/config and the even/odd subsets from sliced workspaces; applies
-    ``--filter-set`` overrides everywhere and the even-step rule to even/odd.
+    Volumes are stored under ``<output_root>/[<top_dir>/]<group>/<case_id>/<study_uid>/``
+    where ``<group>`` is the group name (e.g. ``Mode2_0808``) and the optional top-level
+    directory comes from ``options.top_dir`` (``PDL`` for the default source root).
+
+    The group's ``fdk_para`` geometry is applied to every subset's fdkPara.xml copy and its
+    standard ``filter_file`` (if any) replaces every subset's filter.xml copy verbatim, so a
+    single scan can be rebuilt at different FOVs (e.g. Mode2 at 1609 and 0808) without
+    touching the source files.  Reconstructs the full subset from a plain copy of the
+    raw/config and the even/odd subsets from sliced workspaces; applies the even-step rule
+    to even/odd.
     """
     output_root = Path(output_dir)
-    mode_fov = mode_fov_key(study.mode, study.cfg_dir / "fdkPara.xml")
-    case_out = output_root / mode_fov / study.case_id / study.study_uid
+    prefix_parts = ([options.top_dir] if options.top_dir else []) + [group.name, study.case_id, study.study_uid]
+    case_out = output_root.joinpath(*prefix_parts)
+    rel_prefix = "/".join(prefix_parts)
     expected = list(OUTPUT_NAMES.values())
     if not options.overwrite and all((case_out / name).is_file() for name in expected) and (case_out / "metadata.json").is_file():
-        record = _base_record(study, options, mode_fov)
+        record = _base_record(study, options, group)
         record.update({"status": "success", "skipped": True,
-                       "outputs": {name: f"{mode_fov}/{study.case_id}/{study.study_uid}/{name}" for name in expected}})
+                       "outputs": {name: f"{rel_prefix}/{name}" for name in expected}})
         return record
     if not study.nviews:
         raise ValueError("study has no projections")
@@ -491,7 +580,7 @@ def reconstruct_study(
     per_view, per_view_warnings = validated_per_view(
         study.cfg_dir, study.nviews, options.per_view_files.get(study.mode, {})
     )
-    workspace = _workspace_context(study, output_root, options, mode_fov)
+    workspace = _workspace_context(study, output_root, options, prefix_parts)
     try:
         full_raw, full_cfg = build_full_workspace(study.raw_dir, study.cfg_dir, workspace / "full", options.link_mode)
         even_indices, odd_indices = split_projection_indices(study.nviews)
@@ -499,10 +588,15 @@ def reconstruct_study(
         odd_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, odd_indices, workspace / "odd", options.link_mode, per_view)
         workspaces = {"full": (full_raw, full_cfg), "even": (even_ws.raw_dir, even_ws.cfg_dir), "odd": (odd_ws.raw_dir, odd_ws.cfg_dir)}
 
+        fdk_changed = apply_fdk_para(full_cfg, group.fdk_para)
+        filter_replaced = False
         step_fixes: dict[str, list[tuple[str, int, int]]] = {}
         for subset, (_raw, _cfg) in workspaces.items():
-            if options.filter_set:
-                apply_filter_overrides(_cfg, options.filter_set)
+            if subset != "full":
+                apply_fdk_para(_cfg, group.fdk_para)
+            if group.filter_file:
+                if apply_filter_file(_cfg, group.filter_file):
+                    filter_replaced = True
             if subset != "full":
                 fixes = fix_subsample_step(_cfg, options.step_modules)
                 if fixes:
@@ -531,9 +625,9 @@ def reconstruct_study(
         for (subset, tag), result in results.items():
             name = OUTPUT_NAMES[(subset, tag)]
             _atomic_raw(case_out / name, result.volume)
-            outputs[name] = f"{mode_fov}/{study.case_id}/{study.study_uid}/{name}"
+            outputs[name] = f"{rel_prefix}/{name}"
 
-        record = _base_record(study, options, mode_fov)
+        record = _base_record(study, options, group)
         record.update({
             "status": "success",
             "skipped": False,
@@ -541,8 +635,11 @@ def reconstruct_study(
             "dtype": "<f4",
             "spacing_zyx": spacings["full_none"],
             "outputs": outputs,
+            "fdk_para": dict(group.fdk_para),
+            "fdk_changed": fdk_changed,
+            "filter_file": group.filter_file,
+            "filter_replaced": filter_replaced,
             "step_fixes": step_fixes,
-            "filter_set": dict(options.filter_set),
             "per_view_sliced": dict(per_view),
             "per_view_warnings": per_view_warnings,
         })
@@ -553,12 +650,13 @@ def reconstruct_study(
             shutil.rmtree(workspace, ignore_errors=True)
 
 
-def _base_record(study: Study, options: VariantOptions, mode_fov: str | None = None) -> dict[str, Any]:
+def _base_record(study: Study, options: VariantOptions, group: ReconGroup) -> dict[str, Any]:
     record = {
         "case_id": study.case_id,
         "study_uid": study.study_uid,
         "scan_id": study.scan_id,
         "mode": study.mode,
+        "group": group.name,
         "raw_dir": str(study.raw_dir),
         "cfg_dir": str(study.cfg_dir),
         "kv": study.kv,
@@ -568,9 +666,8 @@ def _base_record(study: Study, options: VariantOptions, mode_fov: str | None = N
         "even_views": len(split_projection_indices(study.nviews)[0]),
         "odd_views": len(split_projection_indices(study.nviews)[1]),
     }
-    if mode_fov is not None:
-        record["mode_fov"] = mode_fov
-        record["fov_suffix"] = mode_fov.split("_", 1)[1]
+    if options.top_dir:
+        record["top_dir"] = options.top_dir
     return record
 
 

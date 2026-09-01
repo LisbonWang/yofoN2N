@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "description": "Reconstruction groups. Each group defines a target reconstruction geometry: source scan modes it applies to, the fdkPara.xml field values to overwrite (absolute targets, copied from real Mode1/2/3 configurations), and the standard filter.xml file to use (whole-file replacement, no runtime parameter overrides). A study is reconstructed once per matching group (same mode -> all groups).",
+  "groups": {
+    "Mode0_1615": {
+      "source_modes": ["Mode0"],
+      "fdk_para": {
+        "xNum": 640, "yNum": 640, "zNum": 600,
+        "xSpacing": 0.25, "ySpacing": 0.25, "zSpacing": 0.25
+      },
+      "filter_file": null
+    },
+    "Mode1_1615": {
+      "source_modes": ["Mode1"],
+      "fdk_para": {
+        "xNum": 640, "yNum": 640, "zNum": 600,
+        "xSpacing": 0.25, "ySpacing": 0.25, "zSpacing": 0.25
+      },
+      "filter_file": "recon_filters/Mode1.filter.xml"
+    },
+    "Mode2_1609": {
+      "source_modes": ["Mode2"],
+      "fdk_para": {
+        "xNum": 640, "yNum": 640, "zNum": 360,
+        "xSpacing": 0.25, "ySpacing": 0.25, "zSpacing": 0.25
+      },
+      "filter_file": "recon_filters/Mode2.filter.xml"
+    },
+    "Mode2_0808": {
+      "source_modes": ["Mode2"],
+      "fdk_para": {
+        "xNum": 640, "yNum": 640, "zNum": 640,
+        "xSpacing": 0.125, "ySpacing": 0.125, "zSpacing": 0.125
+      },
+      "filter_file": "recon_filters/Mode2.filter.xml"
+    },
+    "Mode3_1609": {
+      "source_modes": ["Mode3"],
+      "fdk_para": {
+        "xNum": 640, "yNum": 640, "zNum": 360,
+        "xSpacing": 0.25, "ySpacing": 0.25, "zSpacing": 0.25
+      },
+      "filter_file": "recon_filters/Mode3.filter.xml"
+    },
+    "Mode3_0808": {
+      "source_modes": ["Mode3"],
+      "fdk_para": {
+        "xNum": 640, "yNum": 640, "zNum": 640,
+        "xSpacing": 0.125, "ySpacing": 0.125, "zSpacing": 0.125
+      },
+      "filter_file": "recon_filters/Mode3.filter.xml"
+    }
+  }
+}
