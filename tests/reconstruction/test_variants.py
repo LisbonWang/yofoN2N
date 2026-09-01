@@ -344,17 +344,19 @@ def test_apply_fdk_para_overwrites_and_validates(tmp_path):
 def test_load_recon_groups_and_groups_for_mode(tmp_path):
     filters = tmp_path / "recon_filters"
     filters.mkdir()
-    (filters / "Mode2.filter.xml").write_text(_filter_xml("4"), encoding="utf-8")
+    # same mode, different groups -> each group keeps its own standard filter file
+    (filters / "Mode2_1609.filter.xml").write_text(_filter_xml("4"), encoding="utf-8")
+    (filters / "Mode2_0808.filter.xml").write_text(_filter_xml("6"), encoding="utf-8")
     cfg_file = tmp_path / "groups.json"
     cfg_file.write_text(json.dumps({
         "schema_version": 1,
         "groups": {
             "Mode2_1609": {"source_modes": ["Mode2"],
                            "fdk_para": {"xNum": 640, "zNum": 360, "zSpacing": 0.25},
-                           "filter_file": "recon_filters/Mode2.filter.xml"},
+                           "filter_file": "recon_filters/Mode2_1609.filter.xml"},
             "Mode2_0808": {"source_modes": ["Mode2"],
                            "fdk_para": {"xNum": 640, "zNum": 640, "zSpacing": 0.125},
-                           "filter_file": "recon_filters/Mode2.filter.xml"},
+                           "filter_file": "recon_filters/Mode2_0808.filter.xml"},
             "Mode0_1615": {"source_modes": ["Mode0"],
                            "fdk_para": {"zNum": 600}, "filter_file": None},
         },
@@ -362,8 +364,10 @@ def test_load_recon_groups_and_groups_for_mode(tmp_path):
     groups = load_recon_groups(cfg_file)
     assert set(groups) == {"Mode2_1609", "Mode2_0808", "Mode0_1615"}
     assert groups["Mode2_0808"].fdk_para["zSpacing"] == 0.125
-    # relative filter_file is resolved against the JSON's directory
-    assert groups["Mode2_0808"].filter_file == str((filters / "Mode2.filter.xml").resolve())
+    # relative filter_file is resolved against the JSON's directory, per group
+    assert groups["Mode2_1609"].filter_file == str((filters / "Mode2_1609.filter.xml").resolve())
+    assert groups["Mode2_0808"].filter_file == str((filters / "Mode2_0808.filter.xml").resolve())
+    assert groups["Mode2_1609"].filter_file != groups["Mode2_0808"].filter_file
     assert groups["Mode0_1615"].filter_file is None
     # a Mode2 study matches both Mode2 groups, in file order
     assert [g.name for g in groups_for_mode(groups, "Mode2")] == ["Mode2_1609", "Mode2_0808"]
