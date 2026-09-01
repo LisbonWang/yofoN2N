@@ -388,7 +388,11 @@ def test_load_recon_groups_and_groups_for_mode(tmp_path):
 
 
 def test_reconstruct_study_mode0_no_per_view(tmp_path):
-    """Mode0 (no per-view config) must reconstruct fine and copy ancillary files whole."""
+    """Mode0 (no per-view config, not in split modes) reconstructs the full set only.
+
+    The full subset copies ancillary binaries whole and produces the four full
+    combos; no even/odd volumes are generated for non-split modes.
+    """
     study = _make_study(tmp_path, count=5, mode="Mode0")
     out = tmp_path / "out"
     calls = []
@@ -399,14 +403,47 @@ def test_reconstruct_study_mode0_no_per_view(tmp_path):
     assert record["status"] == "success"
     assert record["group"] == "Mode0_1615"
     assert record["top_dir"] == "PDL"
+    assert record["split"] is False
+    assert "even_views" not in record and "odd_views" not in record
     # no per-view mapping for Mode0 -> nothing sliced, no warnings
     assert record["per_view_sliced"] == {}
     assert record["per_view_warnings"] == []
+    # only the 4 full combos, no even/odd
+    assert set(record["outputs"]) == {"full.raw", "full.marfi.raw", "full.bhc.raw", "full.marfi.bhc.raw"}
     for name in record["outputs"]:
         rel = record["outputs"][name]
         assert rel == f"PDL/Mode0_1615/CASE-1/STUDY-1/{name}"
         assert (out / rel).is_file()
-    assert len(calls) == 6
+    assert len(calls) == 4
+    assert all(c["raw_count"] == 5 for c in calls)
+
+
+def test_reconstruct_study_mode1_no_split(tmp_path):
+    """Mode1 (odd/even dual-geometry, not in split modes) is rebuilt from the full set only.
+
+    Even with more raw frames than fdkPara noView (1046 raw vs 1020 noView in the real
+    data), the full workspace keeps only the declared projection count so the per-view
+    matrix stays in sync; the extra frames are dropped, matching SDK behaviour.
+    """
+    study = _make_study(tmp_path, count=7, mode="Mode1")
+    # simulate the real Mode1 mismatch: fdkPara declares fewer views than raw frames
+    fdk = study.cfg_dir / "fdkPara.xml"
+    fdk.write_text(fdk.read_text(encoding="utf-8").replace("<noView>7</noView>", "<noView>5</noView>"), encoding="utf-8")
+    out = tmp_path / "out"
+    calls = []
+    group = _make_group(name="Mode1_1615", modes=("Mode1",))
+    options = VariantOptions(xday_dir=tmp_path / "sdk", keep_workspace=True, top_dir="PDL")
+    record = reconstruct_study(study, group, out, options, reconstruct_fn=_make_fake_reconstruct(calls))
+
+    assert record["status"] == "success"
+    assert record["split"] is False
+    assert set(record["outputs"]) == {"full.raw", "full.marfi.raw", "full.bhc.raw", "full.marfi.bhc.raw"}
+    assert len(calls) == 4
+    # the full workspace is truncated to the declared noView=5
+    assert all(c["raw_count"] == 5 for c in calls)
+    ws = out / "PDL" / "Mode1_1615" / "CASE-1" / "STUDY-1" / "workspace"
+    assert _no_view(ws / "full" / "config") == 5
+    assert len(list((ws / "full" / "raw").glob("*.raw"))) == 5
 
 
 def test_reconstruct_study_standard_filter_replaced_or_kept(tmp_path):

@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from cbct_n2n.reconstruction import (
     DEFAULT_COMBOS,
     DEFAULT_PER_VIEW_FILES,
+    DEFAULT_SPLIT_MODES,
     DEFAULT_STEP_MODULES,
     OUTPUT_NAMES,
     VariantOptions,
@@ -57,6 +58,7 @@ from cbct_n2n.reconstruction import (
     load_index,
     load_recon_groups,
     merge_index_records,
+    output_names_for_mode,
     reconstruct_study,
     verify_volumes,
 )
@@ -105,6 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "modes without an entry (e.g. Mode0) copy such files whole")
     parser.add_argument("--step-modules", default=",".join(DEFAULT_STEP_MODULES),
                         help="Comma-separated modules whose step must stay even for downsampled subsets")
+    parser.add_argument("--split-modes", default=",".join(DEFAULT_SPLIT_MODES),
+                        help="Comma-separated modes whose scans are split into even/odd subsets. "
+                             "Modes not listed (e.g. the odd/even dual-geometry Mode1) reconstruct from "
+                             "the full projection set only and produce no even/odd volumes")
     parser.add_argument("--mode", default=None, help="Only reconstruct studies of this mode, e.g. Mode2")
     parser.add_argument("--groups-config", type=Path, default=DEFAULT_GROUPS_CONFIG,
                         help="JSON file defining the reconstruction groups (source modes + fdkPara geometry + standard filter file)")
@@ -141,6 +147,7 @@ def main() -> int:
         for mode_files in per_view_files.values():
             mode_files[name] = width
     step_modules = tuple(m.strip() for m in args.step_modules.split(",") if m.strip())
+    split_modes = tuple(m.strip() for m in args.split_modes.split(",") if m.strip()) or DEFAULT_SPLIT_MODES
     groups = load_recon_groups(args.groups_config)
     selected_names = set(args.groups.split(",")) if args.groups else None
     if selected_names is not None:
@@ -176,8 +183,9 @@ def main() -> int:
         print(f"  {top_dir}/{group.name:<14} {study.case_id}/{study.study_uid}\t{study.mode}\t{study.nviews} views\t"
               f"{study.kv}kV {study.ma}mA\t{study.raw_dir.name}", flush=True)
     if args.dry_run:
-        print(f"Dry run: {len(work)} (study, group) item(s) x {len(OUTPUT_NAMES)} variants = "
-              f"{len(work) * len(OUTPUT_NAMES)} volumes would be reconstructed.", flush=True)
+        volumes = sum(len(output_names_for_mode(study.mode, combos, split_modes)) for study, _group in work)
+        print(f"Dry run: {len(work)} (study, group) item(s) x per-mode output sets = "
+              f"{volumes} volumes would be reconstructed.", flush=True)
         return 0
 
     output_root = args.output_root.resolve()
@@ -195,6 +203,7 @@ def main() -> int:
         link_mode=args.link_mode,
         per_view_files=per_view_files,
         step_modules=step_modules,
+        split_modes=split_modes,
         kv=args.kv,
         ma=args.ma,
         overwrite=args.overwrite,

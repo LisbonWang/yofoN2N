@@ -6,6 +6,7 @@ from .batch import load_index, merge_index_records, verify_volumes
 from .variants import (
     DEFAULT_COMBOS,
     DEFAULT_PER_VIEW_FILES,
+    DEFAULT_SPLIT_MODES,
     DEFAULT_STEP_MODULES,
     OUTPUT_NAMES,
     SUBSETS,
@@ -21,16 +22,19 @@ from .variants import (
     groups_for_mode,
     load_recon_groups,
     mode_fov_key,
+    output_names_for_mode,
     read_module_field,
     reconstruct_study,
+    subsets_for_mode,
     validated_per_view,
 )
 
 __all__ = [
-    "DEFAULT_COMBOS", "DEFAULT_PER_VIEW_FILES", "DEFAULT_STEP_MODULES", "OUTPUT_NAMES", "PairRecord", "PrepareOptions",
+    "DEFAULT_COMBOS", "DEFAULT_PER_VIEW_FILES", "DEFAULT_SPLIT_MODES", "DEFAULT_STEP_MODULES", "OUTPUT_NAMES", "PairRecord", "PrepareOptions",
     "SUBSETS", "ScanCase", "Study", "SubsetWorkspace", "VariantOptions", "ReconGroup", "apply_fdk_para",
     "apply_filter_file", "build_full_workspace", "build_subset_workspace", "discover_cases", "discover_studies",
     "fix_subsample_step", "fov_suffix_from_fdk", "groups_for_mode", "load_index", "load_recon_groups",
-    "merge_index_records", "mode_fov_key", "numbered_raw_files", "prepare_case", "read_module_field",
-    "reconstruct_study", "scan_reconstructable", "split_projection_indices", "validated_per_view", "verify_volumes",
+    "merge_index_records", "mode_fov_key", "numbered_raw_files", "output_names_for_mode", "prepare_case",
+    "read_module_field", "reconstruct_study", "scan_reconstructable", "split_projection_indices",
+    "subsets_for_mode", "validated_per_view", "verify_volumes",
 ]

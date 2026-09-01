@@ -60,6 +60,15 @@ from .subset import build_subset_workspace, numbered_raw_files, split_projection
 #: subset name -> display name used in output file names
 SUBSETS = ("full", "even", "odd")
 
+#: modes whose scans get even/odd projection splitting.  Mode2/Mode3 data is
+#: self-consistent (raw views == fdkPara noView == projectionMatrix rows) so the
+#: downsampled subsets reconstruct correctly.  Mode1 is an odd/even dual-geometry
+#: scan (fdkPara carries SIDOdd/SIDEven, zSrcOffsetOdd/zSrcOffsetEven, ... and the
+#: projection matrix alternates odd/even rows) whose raw view count (1046) does not
+#: match noView/matrix rows (1020); splitting it produces misaligned volumes, so
+#: Mode0/Mode1 are reconstructed from the full set only.
+DEFAULT_SPLIT_MODES: tuple[str, ...] = ("Mode2", "Mode3")
+
 #: default post-processing combos: tag -> xday --post-procs chain
 DEFAULT_COMBOS: tuple[tuple[str, str], ...] = (
     ("none", ""),
@@ -78,6 +87,34 @@ OUTPUT_NAMES: dict[tuple[str, str], str] = {
     ("full", "bhc"): "full.bhc.raw",
     ("full", "bhc_marfi"): "full.marfi.bhc.raw",
 }
+
+
+def subsets_for_mode(mode: str, split_modes: Iterable[str] = DEFAULT_SPLIT_MODES) -> tuple[str, ...]:
+    """Return the subset names reconstructed for *mode*.
+
+    Modes listed in *split_modes* get the full even/odd/full trio; all other modes
+    (e.g. the odd/even dual-geometry Mode1 scan) are reconstructed from the full set
+    only, so no even/odd outputs are produced and no per-view slicing applies.
+    """
+    if any(m.casefold() == mode.casefold() for m in split_modes):
+        return SUBSETS
+    return ("full",)
+
+
+def output_names_for_mode(mode: str, combos: Iterable[tuple[str, str]], split_modes: Iterable[str] = DEFAULT_SPLIT_MODES) -> tuple[str, ...]:
+    """Output file names produced for a study of *mode* under *combos*.
+
+    Order follows ``SUBSETS`` (full first) then combo order, matching
+    ``OUTPUT_NAMES`` for the reconstructed subsets only.
+    """
+    subsets = subsets_for_mode(mode, split_modes)
+    names: list[str] = []
+    for subset in subsets:
+        for tag, _chain in combos:
+            name = OUTPUT_NAMES.get((subset, tag))
+            if name is not None and name not in names:
+                names.append(name)
+    return tuple(names)
 
 #: modules whose ``step`` must be even after projection downsampling (even/odd subsets)
 DEFAULT_STEP_MODULES = ("MARFI", "BHC")
@@ -122,6 +159,7 @@ class VariantOptions:
     link_mode: str = "copy"
     per_view_files: dict[str, dict[str, int]] = field(default_factory=lambda: {m: dict(v) for m, v in DEFAULT_PER_VIEW_FILES.items()})
     step_modules: tuple[str, ...] = DEFAULT_STEP_MODULES
+    split_modes: tuple[str, ...] = DEFAULT_SPLIT_MODES
     kv: float | None = None
     ma: float | None = None
     overwrite: bool = False
@@ -330,19 +368,42 @@ def _update_no_view(path: Path, view_count: int) -> None:
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
+def _read_no_view(fdk_path: str | Path) -> int | None:
+    """Return the ``noView`` value from an fdkPara.xml, or None when absent."""
+    try:
+        tree = ET.parse(Path(fdk_path))
+    except (OSError, ET.ParseError):
+        return None
+    node = tree.getroot().find(".//noView")
+    if node is None or node.text is None:
+        return None
+    try:
+        return int(node.text)
+    except ValueError:
+        return None
+
+
 def build_full_workspace(
     raw_dir: str | Path,
     cfg_dir: str | Path,
     destination: str | Path,
     link_mode: str = "copy",
+    *,
+    max_views: int | None = None,
 ) -> tuple[Path, Path]:
-    """Copy all raw projections and the full config into a temp workspace.
+    """Copy raw projections and the full config into a temp workspace.
 
-    ``noView`` in the copied fdkPara.xml is normalized to the actual projection count so
-    that every reconstruction uses the real number of views.  Returns ``(raw_dir, cfg_dir)``
-    of the freshly built workspace.
+    ``noView`` in the copied fdkPara.xml is normalized to the number of projections
+    actually copied.  When *max_views* is given (e.g. the source fdkPara's own
+    ``noView``), only the first *max_views* projections are copied — raw directories
+    may hold more frames than the config declares (the extra ones are ignored by the
+    SDK), and copying them all would desynchronize the projection count from the
+    per-view ``projectionMatrix.bin``.  Returns ``(raw_dir, cfg_dir)`` of the freshly
+    built workspace.
     """
     raw_files = numbered_raw_files(raw_dir)
+    if max_views is not None and len(raw_files) > max_views:
+        raw_files = raw_files[:max_views]
     cfg_path = Path(cfg_dir)
     if not cfg_path.is_dir():
         raise FileNotFoundError(f"Config directory not found: {cfg_path}")
@@ -565,7 +626,7 @@ def reconstruct_study(
     prefix_parts = ([options.top_dir] if options.top_dir else []) + [group.name, study.case_id, study.study_uid]
     case_out = output_root.joinpath(*prefix_parts)
     rel_prefix = "/".join(prefix_parts)
-    expected = list(OUTPUT_NAMES.values())
+    expected = output_names_for_mode(study.mode, options.combos, options.split_modes)
     if not options.overwrite and all((case_out / name).is_file() for name in expected) and (case_out / "metadata.json").is_file():
         record = _base_record(study, options, group)
         record.update({"status": "success", "skipped": True,
@@ -577,16 +638,27 @@ def reconstruct_study(
         raise ValueError("kV/mA unknown; pass --kv/--ma or fix the raw directory name")
 
     case_out.mkdir(parents=True, exist_ok=True)
+    split_subsets = any(m.casefold() == study.mode.casefold() for m in options.split_modes)
     per_view, per_view_warnings = validated_per_view(
         study.cfg_dir, study.nviews, options.per_view_files.get(study.mode, {})
     )
+    # The SDK consumes only the projections declared by fdkPara's noView; raw dirs may
+    # hold more frames (Mode1: 1046 raw vs noView=1020) which must be dropped, otherwise
+    # the full subset would run with more projections than the per-view matrix rows.
+    source_no_view = _read_no_view(study.cfg_dir / "fdkPara.xml")
     workspace = _workspace_context(study, output_root, options, prefix_parts)
     try:
-        full_raw, full_cfg = build_full_workspace(study.raw_dir, study.cfg_dir, workspace / "full", options.link_mode)
-        even_indices, odd_indices = split_projection_indices(study.nviews)
-        even_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, even_indices, workspace / "even", options.link_mode, per_view)
-        odd_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, odd_indices, workspace / "odd", options.link_mode, per_view)
-        workspaces = {"full": (full_raw, full_cfg), "even": (even_ws.raw_dir, even_ws.cfg_dir), "odd": (odd_ws.raw_dir, odd_ws.cfg_dir)}
+        full_raw, full_cfg = build_full_workspace(
+            study.raw_dir, study.cfg_dir, workspace / "full", options.link_mode,
+            max_views=source_no_view,
+        )
+        workspaces = {"full": (full_raw, full_cfg)}
+        if split_subsets:
+            even_indices, odd_indices = split_projection_indices(study.nviews)
+            even_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, even_indices, workspace / "even", options.link_mode, per_view)
+            odd_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, odd_indices, workspace / "odd", options.link_mode, per_view)
+            workspaces["even"] = (even_ws.raw_dir, even_ws.cfg_dir)
+            workspaces["odd"] = (odd_ws.raw_dir, odd_ws.cfg_dir)
 
         fdk_changed = apply_fdk_para(full_cfg, group.fdk_para)
         filter_replaced = False
@@ -603,7 +675,12 @@ def reconstruct_study(
                     step_fixes[subset] = fixes
 
         common = dict(xday_install_dir=options.xday_dir, dtype=options.dtype, show_progress=False, sdk=sdk)
-        wanted = set(OUTPUT_NAMES)
+        combos_by_tag = dict(options.combos)
+        wanted = {
+            (s, t)
+            for (s, t) in OUTPUT_NAMES
+            if s in subsets_for_mode(study.mode, options.split_modes) and t in combos_by_tag
+        }
         results: dict[tuple[str, str], Any] = {}
         for subset, (_raw, _cfg) in workspaces.items():
             for tag, chain in options.combos:
@@ -651,6 +728,7 @@ def reconstruct_study(
 
 
 def _base_record(study: Study, options: VariantOptions, group: ReconGroup) -> dict[str, Any]:
+    split = any(m.casefold() == study.mode.casefold() for m in options.split_modes)
     record = {
         "case_id": study.case_id,
         "study_uid": study.study_uid,
@@ -663,9 +741,12 @@ def _base_record(study: Study, options: VariantOptions, group: ReconGroup) -> di
         "ma": study.ma,
         "nviews": study.nviews,
         "combos": [{"tag": tag, "post_procs": chain} for tag, chain in options.combos],
-        "even_views": len(split_projection_indices(study.nviews)[0]),
-        "odd_views": len(split_projection_indices(study.nviews)[1]),
+        "split": split,
     }
+    if split:
+        even_idx, odd_idx = split_projection_indices(study.nviews)
+        record["even_views"] = len(even_idx)
+        record["odd_views"] = len(odd_idx)
     if options.top_dir:
         record["top_dir"] = options.top_dir
     return record
