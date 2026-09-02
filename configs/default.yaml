@@ -34,3 +34,5 @@ training:
   patience: 15
   device: cuda
   run_dir: runs/default
+  history_metrics: true
+  plot_interval: 5

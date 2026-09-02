@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from .checkpoint import save_checkpoint
+from .metrics import compute_metrics
 
 
 def seed_everything(seed: int) -> None:
@@ -18,6 +19,26 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+_curve_warned = False
+
+
+def _refresh_training_curve(run_dir: str | Path) -> None:
+    """Re-plot ``training_curves.png`` in place; failures are non-fatal."""
+    global _curve_warned
+    if _curve_warned:
+        return
+    try:
+        from .plot import plot_history
+
+        plot_history(run_dir)
+    except ImportError:
+        print("[WARN] matplotlib not available; live curve refresh disabled", flush=True)
+        _curve_warned = True
+    except Exception as exc:  # never let plotting break training
+        print(f"[WARN] curve refresh failed ({exc}); further refreshes disabled", flush=True)
+        _curve_warned = True
 
 
 def _source_target(batch: Any) -> tuple[torch.Tensor, torch.Tensor]:
@@ -70,6 +91,33 @@ def validate(model, loader, device: torch.device) -> float:
     return total / count
 
 
+@torch.no_grad()
+def compute_val_metrics(model, loader, device: torch.device, data_range: float = 1.0) -> dict[str, float]:
+    """Per-slice image metrics (mae/rmse/psnr/ssim) averaged over the loader.
+
+    Returns an empty dict when the loader is empty or the data is not
+    image-like, so callers can record metrics opportunistically.
+    """
+    model.eval()
+    totals = {"mae": 0.0, "rmse": 0.0, "psnr": 0.0, "ssim": 0.0}
+    count = 0
+    for batch in loader:
+        source, target = (item.to(device, non_blocking=True) for item in _source_target(batch))
+        prediction = model(source)
+        pred_np = prediction.detach().float().cpu().numpy()[:, 0]
+        target_np = target.detach().float().cpu().numpy()[:, 0]
+        if pred_np.ndim != 3 or pred_np.shape[0] == 0:
+            continue
+        metrics = compute_metrics(pred_np, target_np, data_range)
+        n = pred_np.shape[0]
+        for key in totals:
+            totals[key] += metrics[key] * n
+        count += n
+    if not count:
+        return {}
+    return {key: value / count for key, value in totals.items()}
+
+
 def fit(model, train_loader, val_loader, optimizer, scheduler, device: torch.device, run_dir: str | Path, config: dict[str, Any], *, start_epoch: int = 0) -> dict[str, float]:
     options = config["training"]
     destination = Path(run_dir)
@@ -82,12 +130,18 @@ def fit(model, train_loader, val_loader, optimizer, scheduler, device: torch.dev
         best_loss = float(historical.get("metrics", {}).get("val_loss", best_loss))
     best_metrics = {"val_loss": best_loss}
     history_path = destination / "history.jsonl"
+    plot_interval = int(options.get("plot_interval", 0) or 0)
     for epoch in range(start_epoch, int(options["epochs"])):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, scaler, options.get("gradient_clip"))
         val_loss = validate(model, val_loader, device)
         if scheduler is not None:
             scheduler.step(val_loss)
         metrics = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "learning_rate": optimizer.param_groups[0]["lr"]}
+        if options.get("history_metrics"):
+            data_range = float(config.get("data", {}).get("metric_data_range", options.get("metric_data_range", 1.0)))
+            image_metrics = compute_val_metrics(model, val_loader, device, data_range)
+            if image_metrics:
+                metrics.update(image_metrics)
         with history_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(metrics) + "\n")
         save_checkpoint(destination / "last.pt", model, optimizer, scheduler, epoch, metrics, config)
@@ -103,6 +157,8 @@ def fit(model, train_loader, val_loader, optimizer, scheduler, device: torch.dev
             f"val_l1={val_loss:.6f} lr={metrics['learning_rate']:.3e}{status}",
             flush=True,
         )
+        if plot_interval > 0 and (epoch - start_epoch) % plot_interval == 0:
+            _refresh_training_curve(destination)
         if status == "":
             if stale >= int(options.get("patience", options["epochs"])):
                 break
