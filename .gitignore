@@ -14,3 +14,6 @@ tmp/
 *.pt
 *.pth
 *.ckpt
+
+# local project data (WorkBuddy memory/hooks), not part of the repo
+.workbuddy/

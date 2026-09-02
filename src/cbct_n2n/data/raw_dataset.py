@@ -10,6 +10,16 @@ from torch.utils.data import Dataset
 from .dataset import pad_to_multiple
 
 
+def _manifest_key(item: dict[str, Any]) -> str:
+    """Unique key per manifest record.
+
+    New manifests carry an explicit 'key' (e.g. f"{study_uid}::{group}") so
+    that multiple studies of one case - or the same scan rebuilt into several
+    FOV groups - do not collide; legacy manifests fall back to case_id.
+    """
+    return str(item.get("key", item["case_id"]))
+
+
 class RawPairedSliceDataset(Dataset):
     """Full axial slices from relative-path float32 RAW reconstruction records."""
 
@@ -22,11 +32,11 @@ class RawPairedSliceDataset(Dataset):
         self.augment = augment
         self.supervision_mode = supervision_mode
         base = Path(manifest_path).resolve().parent
-        records = {str(item["case_id"]): item for item in manifest["records"]}
+        records = {_manifest_key(item): item for item in manifest["records"]}
         self.volumes: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
         self.slices: list[tuple[int, int, str]] = []
-        for case_id in manifest["splits"][split]:
-            item = records[str(case_id)]
+        for record_key in manifest["splits"][split]:
+            item = records[record_key]
             if item.get("reconstruction_status") not in {None, "success"}:
                 continue
             shape = tuple(int(value) for value in item["shape"])
@@ -36,7 +46,7 @@ class RawPairedSliceDataset(Dataset):
             odd = np.memmap(base / outputs["odd"], dtype=dtype, mode="r", shape=shape)
             full = np.memmap(base / outputs["full"], dtype=dtype, mode="r", shape=shape)
             index = len(self.volumes)
-            self.volumes.append((str(case_id), even, odd, full))
+            self.volumes.append((str(item.get("case_id", record_key)), even, odd, full))
             count = min(shape[0], max_slices_per_case or shape[0])
             self.slices.extend((index, z, source_kind) for z in range(count) for source_kind in ("even", "odd"))
         if not self.volumes:

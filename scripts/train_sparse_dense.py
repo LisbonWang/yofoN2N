@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from cbct_n2n.config import load_config
-from cbct_n2n.data.raw_dataset import RawPairedSliceDataset
+from cbct_n2n.data.n2n_dataset import N2NDataset
 from cbct_n2n.models import UNet2D
 from cbct_n2n.training.checkpoint import load_checkpoint
 from cbct_n2n.training.trainer import fit, seed_everything
@@ -27,14 +27,20 @@ def main() -> int:
     config = load_config(args.config)
     data_cfg, train_cfg = config["data"], config["training"]
     seed_everything(int(data_cfg.get("seed", 42)))
+    # N2NDataset: explicit mapping directions take precedence; a legacy
+    # supervision_mode is translated when no mappings are given (default
+    # full_view keeps the historical RawPairedSliceDataset behaviour).
+    mappings = data_cfg.get("mappings")
+    residuals = data_cfg.get("residuals")
     supervision_mode = str(data_cfg.get("supervision_mode", "full_view"))
     max_slices = data_cfg.get("max_slices_per_case")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    train_data = RawPairedSliceDataset(manifest, args.manifest, "train",
-                                       augment=bool(data_cfg.get("augment", True)), supervision_mode=supervision_mode,
-                                       max_slices_per_case=max_slices)
-    val_data = RawPairedSliceDataset(manifest, args.manifest, "val", augment=False, supervision_mode=supervision_mode,
-                                     max_slices_per_case=max_slices)
+    train_data = N2NDataset(manifest, args.manifest, "train",
+                            mappings=mappings, residuals=residuals, supervision_mode=supervision_mode,
+                            augment=bool(data_cfg.get("augment", True)), max_slices_per_case=max_slices)
+    val_data = N2NDataset(manifest, args.manifest, "val",
+                          mappings=mappings, residuals=residuals, supervision_mode=supervision_mode,
+                          augment=False, max_slices_per_case=max_slices)
     loader_args = {"batch_size": int(train_cfg["batch_size"]), "num_workers": int(train_cfg.get("num_workers", 0)), "pin_memory": True}
     train_loader = DataLoader(train_data, shuffle=True, **loader_args)
     val_loader = DataLoader(val_data, shuffle=False, **loader_args)
