@@ -42,7 +42,9 @@ training:
   batch_size: 2
   learning_rate: 0.0001
   weight_decay: 0.00001
-  num_workers: 0
+  # 2026-09-03 热升级：0 -> 8（数据已入 page cache，GPU 利用率 6-23% 过低，
+  # 多 worker 并行加载可显著提高 GPU 利用率；服务器 128 核 load ~74 有余量）
+  num_workers: 8
   amp: true
   gradient_clip: 1.0
   patience: 15
