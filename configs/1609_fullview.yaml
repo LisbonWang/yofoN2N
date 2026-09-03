@@ -1,0 +1,48 @@
+# 1609 视野 半视图 -> 全视图 监督训练配置（计划 A：half->full，E2）
+# 数据：Mode2_1609 / Mode3_1609 重建卷（/data/raid0/yyc/AIReduceNoise/PDL/，
+#       study 级 manifest /data/raid0/yyc/AIReduceNoise/splits_1609.json，与 E1 同划分）
+# 监督：N2NDataset 显式方向映射 even->full / odd->full
+#       —— 直接以同 study 的 full 卷（全视图、低噪声）为监督目标；
+#       不再使用 half<->half 互监督，考察「full 作为含噪弱监督」的收敛与泛化。
+# 模型：UNet2D base16（与 E1 完全一致，代码零改动）
+# 运行（服务器 192.168.36.102，卡 0）：
+#   CUDA_VISIBLE_DEVICES=0 python scripts/train_sparse_dense.py \
+#     --config configs/1609_fullview.yaml \
+#     --manifest /data/raid0/yyc/AIReduceNoise/splits_1609.json \
+#     --run-dir runs/1609_fullview
+reconstruction:
+  source_root: '/data/raid0/yyc/AIReduceNoise'
+  output_root: '/data/raid0/yyc/AIReduceNoise/PDL'
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+
+data:
+  manifest: /data/raid0/yyc/AIReduceNoise/splits_1609.json
+  metric_data_range: 4.0
+  seed: 42
+  augment: true
+  # 计划 A：仅 half -> full 监督（两条方向同 epoch 混合）
+  mappings: [even->full, odd->full]
+  max_slices_per_case: 120
+
+model:
+  in_channels: 1
+  out_channels: 1
+  base_channels: 16
+  depth: 3
+  residual: true
+
+training:
+  epochs: 100
+  batch_size: 2
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  num_workers: 0
+  amp: true
+  gradient_clip: 1.0
+  patience: 15
+  device: cuda:0
+  run_dir: runs/1609_fullview
+  history_metrics: true
+  plot_interval: 5
