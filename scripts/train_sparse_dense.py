@@ -23,6 +23,10 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--init-weights", type=Path,
+                        help="Load model weights only (cold optimizer/scheduler, start from epoch 0). "
+                             "Use for fine-tune-style plans whose supervision target is derived from a "
+                             "previous converged run (e.g. teacher-denoised targets).")
     args = parser.parse_args()
     config = load_config(args.config)
     data_cfg, train_cfg = config["data"], config["training"]
@@ -51,6 +55,13 @@ def main() -> int:
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(train_cfg["learning_rate"]), weight_decay=float(train_cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     start_epoch = 0
+    if args.init_weights:
+        if args.resume:
+            parser.error("--init-weights and --resume are mutually exclusive")
+        state = load_checkpoint(args.init_weights, model, map_location=device)
+        print(f"[init-weights] loaded model weights only from {args.init_weights} "
+              f"(teacher epoch {state.get('epoch')}, val_l1 {state.get('metrics', {}).get('val_loss', float('nan')):.6f}); "
+              "optimizer/scheduler cold-started, training from epoch 0")
     if args.resume:
         state = load_checkpoint(args.resume, model, optimizer, scheduler, map_location=device)
         start_epoch = int(state["epoch"]) + 1
