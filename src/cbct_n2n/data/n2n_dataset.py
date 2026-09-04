@@ -32,6 +32,18 @@ ALLOWED_SOURCES = ("even", "odd")
 ALLOWED_TARGETS = ("even", "odd", "full")
 
 
+def _is_target_allowed(target: str) -> bool:
+    """A mapping target may be a base subset or a ``full.*`` variant volume.
+
+    Variants such as ``full.bhc`` / ``full.marfi.bhc`` already live in the
+    reconstruction index; model-denoised full targets (e.g. ``full.dn``,
+    produced by denoising ``full.raw`` with a teacher model) follow the same
+    ``full.<suffix>`` convention: the volume file ``full.<suffix>.raw`` sits
+    next to ``full.raw`` and is registered in the manifest ``outputs``.
+    """
+    return target in ALLOWED_TARGETS or (target.startswith("full.") and len(target) > len("full."))
+
+
 def _manifest_key(item: dict[str, Any]) -> str:
     """Unique key per manifest record (explicit ``key`` or legacy case_id)."""
     return str(item.get("key", item["case_id"]))
@@ -57,8 +69,9 @@ def _parse_mapping(spec: str) -> tuple[str, str]:
     source, target = source.strip(), target.strip()
     if source not in ALLOWED_SOURCES:
         raise ValueError(f"mapping source must be one of {ALLOWED_SOURCES}, got {source!r}")
-    if target not in ALLOWED_TARGETS:
-        raise ValueError(f"mapping target must be one of {ALLOWED_TARGETS}, got {target!r}")
+    if not _is_target_allowed(target):
+        raise ValueError(f"mapping target must be one of {ALLOWED_TARGETS} or a 'full.*' variant, "
+                         f"got {target!r}")
     if source == target:
         raise ValueError(f"mapping source and target must differ, got {spec!r}")
     return source, target
@@ -108,7 +121,9 @@ class N2NDataset(Dataset):
       ``odd->even``, ``even->full``, ``odd->full``.  Multiple directions may be
       enabled at once and their samples are mixed in the same epoch.  A legacy
       ``supervision_mode`` (``full_view`` / ``half_view_n2n``) is translated when
-      no explicit mappings are given.
+      no explicit mappings are given.  Targets may also be ``full.*`` variants
+      (e.g. ``full.dn`` = a full volume denoised by a teacher model), which the
+      dataset resolves to the ``full.<suffix>.raw`` file registered in outputs.
     - ``residuals`` optionally enables MARFI/BHC data augmentation.  The residual
       image ``R = variant - full`` (computed per slice from the *full-view*
       post-processed volumes ``full.bhc`` / ``full.marfi`` / ``full.marfi.bhc``)
