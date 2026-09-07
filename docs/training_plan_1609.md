@@ -3,6 +3,7 @@
 > 数据源：全量重建产物 `/data/raid0/yyc/AIReduceNoise/PDL/`（Windows 侧 `Z:\raid0\yyc\AIReduceNoise\PDL\`；`reconstruction-index.json`，308 项全 success）
 > 训练目标：Noise2Noise 自监督（even ↔ odd 独立噪声对），在 1609 视野（FOV 16cm）数据上训练 2D UNet 去噪模型
 > 状态：计划稿 v1.3（2026-09-02，`create_recon_splits.py` 落地；修正 case 语义为设备号；E1 manifest 已生成：train 83 / val 10 / test 17）
+> **v2 修复（2026-09-07）：取消层截断 + 重划分。`splits_1609v2.json`：train 90 / val 10 / test 10（110 study 完全随机，Mode2×104 + Mode3×6；test = Mode2×8 + Mode3×2，不再强制 Mode3 全进 test）；`max_slices_per_case` 移除 = 每 study 全 360 层进训练（旧 120 只取 z<120 前 1/3，z≥120 下颌/牙列段从未进训练）。configs：`1609v2_n2n.yaml`（E1 修复版）、`1609v2_fullview.yaml`（E2 修复版，even/odd->full 全层，E3 joint 放弃）。每 epoch 64,800 样本（90×360×2）/ val 7,200。**
 
 ---
 

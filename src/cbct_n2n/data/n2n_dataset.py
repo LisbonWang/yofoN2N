@@ -132,6 +132,13 @@ class N2NDataset(Dataset):
       also enables the combined ``marfibhc`` residual.
 
     Base (non-augmented) samples are always kept; residual samples are appended.
+
+    ``max_slices_per_case`` caps the per-case slice count (``z < cap`` from the
+    start of the volume).  When omitted (None) every slice of the volume is
+    used.  **Warning (2026-09-07): capping to a prefix biases training to the
+    first z-range of the anatomy (e.g. 120/360 leaves the mandible/dentition
+    segment unseen); only cap when the epoch length forces it, and prefer
+    striding over the full z-range over a prefix.
     """
 
     def __init__(self, manifest: dict[str, Any], manifest_path: str | Path, split: str, *,
