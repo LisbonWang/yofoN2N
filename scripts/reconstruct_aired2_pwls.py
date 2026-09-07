@@ -217,7 +217,8 @@ def main() -> int:
         expected = output_names_for_mode(rec["mode"], combos, split_modes)
         record: dict | None = None
         try:
-            if not args.overwrite and all((case_out / n).is_file() for n in expected):
+            if not args.overwrite and (case_out / "metadata.json").is_file() \
+                    and all((case_out / n).is_file() for n in expected):
                 record = {"case_id": rec["case_id"], "study_uid": rec["study_uid"],
                           "scan_id": rec.get("scan_id") or rec["study_uid"], "mode": rec["mode"],
                           "group": group_name, "kv": rec["kv"], "ma": rec["ma"],
