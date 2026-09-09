@@ -25,26 +25,24 @@ sys.path.insert(0, str(_SRC))
 from cbct_n2n.models.unet3d import UNet3D  # noqa: E402
 
 
-def build(batch_size: int, device: torch.device) -> tuple[int, int, int, int]:
+def build(batch_size: int, device: torch.device) -> tuple[int, int]:
     base, depth = 16, 4
-    voxel_depth, identity_layers = 22, 2
-    denoise = voxel_depth - identity_layers
+    voxel_depth = 16
     n_slices = 360
-    n_windows = (n_slices + denoise - 1) // denoise
-    return voxel_depth, identity_layers, denoise, n_windows
+    n_windows = (n_slices + voxel_depth - 1) // voxel_depth
+    return voxel_depth, n_windows
 
 
 def main() -> None:
     device = torch.device("cuda:0")
     base, depth = 16, 4
-    voxel_depth, identity_layers, denoise, n_windows = build(2, device)
+    voxel_depth, n_windows = build(2, device)
     H = W = 640
     batch_size = 2
 
     print(
         f"[bench] base={base} depth={depth} voxel_depth={voxel_depth} "
-        f"identity={identity_layers} denoise={denoise} n_windows={n_windows} "
-        f"batch={batch_size} H=W={H}",
+        f"n_windows={n_windows} batch={batch_size} H=W={H}",
         flush=True,
     )
 
@@ -107,13 +105,10 @@ def main() -> None:
             t0 = time.perf_counter()
             padded = np.stack([vol[i] for i in range(360)])  # 640 already 32-aligned
             windows = []
-            for z_start in range(0, 360, denoise):
-                w_start = z_start - identity_layers
+            for z_start in range(0, 360, voxel_depth):
                 win = np.zeros((voxel_depth, H, W), dtype=np.float32)
-                for i in range(voxel_depth):
-                    z = w_start + i
-                    if 0 <= z < 360:
-                        win[i] = padded[z]
+                z_end = min(z_start + voxel_depth, 360)
+                win[:z_end - z_start] = padded[z_start:z_end]
                 windows.append(win)
             preds = []
             for start in range(0, len(windows), batch_size):
@@ -125,10 +120,9 @@ def main() -> None:
                 preds.append(p)
             all_pred = np.concatenate(preds, axis=0)
             out = np.zeros_like(padded)
-            for k, z_start in enumerate(range(0, 360, denoise)):
-                den = all_pred[k][identity_layers:]
-                z_end = min(z_start + denoise, 360)
-                out[z_start:z_end] = den[: z_end - z_start]
+            for k, z_start in enumerate(range(0, 360, voxel_depth)):
+                z_end = min(z_start + voxel_depth, 360)
+                out[z_start:z_end] = all_pred[k][:z_end - z_start]
             times.append(time.perf_counter() - t0)
         return sum(times) / len(times)
 

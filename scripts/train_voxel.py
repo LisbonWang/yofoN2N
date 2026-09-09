@@ -17,7 +17,7 @@ Behavioural differences vs. the 2D script:
   config explicitly sets ``model.arch: unet2d``.
 * Dataset: :class:`N2N3DDataset` returns a 5D source and a 5D target over
   the same D-slice window.  ``voxel_depth`` is read from the config
-  (``data.voxel_depth``, default 22); it must satisfy
+  (``data.voxel_depth``, default 16); it must satisfy
   ``>= 2 ** model.depth`` for the fixed 2x pooling.
 * All other machinery -- manifest parsing, mappings, residual tags,
   checkpoints, ``fit()``, scheduler, AMP -- is reused unchanged.
@@ -96,18 +96,15 @@ def main() -> int:
     mappings = data_cfg.get("mappings")
     residuals = data_cfg.get("residuals")
     supervision_mode = str(data_cfg.get("supervision_mode", "full_view"))
-    voxel_depth = int(data_cfg.get("voxel_depth", 22))
-    identity_layers = int(data_cfg.get("identity_layers", 0))
+    voxel_depth = int(data_cfg.get("voxel_depth", 16))
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     common_kwargs = dict(
         mappings=mappings, residuals=residuals, supervision_mode=supervision_mode,
     )
     train_data = N2N3DDataset(manifest, args.manifest, "train", voxel_depth=voxel_depth,
-                              identity_layers=identity_layers,
                               augment=bool(data_cfg.get("augment", True)), **common_kwargs)
     val_data = N2N3DDataset(manifest, args.manifest, "val", voxel_depth=voxel_depth,
-                            identity_layers=identity_layers,
                             augment=False, **common_kwargs)
     num_workers = int(train_cfg.get("num_workers", 0))
     loader_args = {"batch_size": int(train_cfg["batch_size"]),
@@ -123,7 +120,7 @@ def main() -> int:
     model = build_model(arch, config["model"])
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[arch] {arch} | params={n_params:,} | voxel_depth={voxel_depth} | "
-          f"identity_layers={identity_layers} | data shape: source=5D target=5D", flush=True)
+          f"data shape: source=5D target=5D", flush=True)
     requested = str(train_cfg.get("device", "cuda"))
     device = torch.device(requested if requested != "cuda" or torch.cuda.is_available() else "cpu")
     model.to(device)

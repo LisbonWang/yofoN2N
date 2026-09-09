@@ -9,8 +9,8 @@ import pytest
 from cbct_n2n.data.n2n3d_dataset import N2N3DDataset
 
 # H/W must be multiples of 32 (pad_to_multiple inside the dataset).
-# 8 z-slices give enough headroom to exercise head overflow (start < 0),
-# tail overflow (start + depth > count) and the identity-buffer layers.
+# 8 z-slices with voxel_depth=4 exercise the non-overlapping start
+# enumeration (0, 4) with no head/tail overflow.
 SHAPE = (8, 32, 32)
 
 
@@ -97,15 +97,14 @@ def _write_manifest(workspace, records, split_keys, split="train"):
     return manifest_path
 
 
-def _dataset(workspace, voxel_depth, identity_layers=0, mappings=("even->full",)):
+def _dataset(workspace, voxel_depth, mappings=("even->full",)):
     volumes = _base_volumes()
     _write_volumes(workspace, "case", volumes)
     record = _record("uid::case::0", "case")
     manifest_path = _write_manifest(workspace, [record], ["uid::case::0"])
     return N2N3DDataset(
         {"records": [record], "splits": {"train": ["uid::case::0"], "val": [], "test": []}},
-        manifest_path, "train", voxel_depth=voxel_depth,
-        identity_layers=identity_layers, mappings=list(mappings),
+        manifest_path, "train", voxel_depth=voxel_depth, mappings=list(mappings),
     )
 
 
@@ -122,20 +121,6 @@ def test_voxel_depth_must_be_positive(workspace):
         N2N3DDataset(manifest, manifest_path, "train", voxel_depth=0, mappings=["even->full"])
 
 
-def test_identity_layers_must_be_less_than_voxel_depth(workspace):
-    volumes = _base_volumes()
-    _write_volumes(workspace, "case_idtv", volumes)
-    record = _record("uid::idtv::0", "case_idtv")
-    manifest = {"records": [record], "splits": {"train": ["uid::idtv::0"], "val": [], "test": []}}
-    manifest_path = _write_manifest(workspace, [record], ["uid::idtv::0"])
-    with pytest.raises(ValueError, match="identity_layers"):
-        N2N3DDataset(manifest, manifest_path, "train", voxel_depth=5,
-                     identity_layers=5, mappings=["even->full"])
-    with pytest.raises(ValueError, match="identity_layers"):
-        N2N3DDataset(manifest, manifest_path, "train", voxel_depth=5,
-                     identity_layers=-1, mappings=["even->full"])
-
-
 def test_accepts_even_voxel_depth(workspace):
     """Even depths are now legal: there is no centre-slice target anymore."""
     dataset = _dataset(workspace, voxel_depth=4)
@@ -148,23 +133,27 @@ def test_accepts_even_voxel_depth(workspace):
 
 
 def test_start_index_enumeration(workspace):
-    """Windows are keyed by start index: -identity_layers, stride 2, <= count-3.
+    """Windows are keyed by start index: 0, stride voxel_depth, never past
+    count - voxel_depth (so the window never overflows the volume).
 
-    With count=8, identity_layers=2 the starts are {-2, 0, 2, 4} (4 samples
-    for a single even->full mapping).
+    With count=8, voxel_depth=4 the starts are {0, 4} (2 samples for a single
+    even->full mapping).
     """
-    dataset = _dataset(workspace, voxel_depth=4, identity_layers=2)
+    dataset = _dataset(workspace, voxel_depth=4)
     starts = sorted(int(dataset[i]["slice_index"]) for i in range(len(dataset)))
-    assert starts == [-2, 0, 2, 4]
-    assert len(dataset) == 4
+    assert starts == [0, 4]
+    assert len(dataset) == 2
 
 
-def test_start_index_enumeration_no_identity(workspace):
-    """identity_layers=0 -> start begins at 0 (no head overflow at all)."""
-    dataset = _dataset(workspace, voxel_depth=4, identity_layers=0)
+def test_start_index_enumeration_uneven_count(workspace):
+    """When count is not a multiple of voxel_depth the last start is still
+    within bounds: count=8, voxel_depth=5 -> starts {0} only (start=3 would
+    overflow, so it is dropped).
+    """
+    dataset = _dataset(workspace, voxel_depth=5)
     starts = sorted(int(dataset[i]["slice_index"]) for i in range(len(dataset)))
-    assert starts == [0, 2, 4]
-    assert len(dataset) == 3
+    assert starts == [0]
+    assert len(dataset) == 1
 
 
 # ---- forward / target shape ------------------------------------------------
@@ -190,12 +179,12 @@ def test_middle_window_maps_source_to_target(workspace):
     manifest_path = _write_manifest(workspace, [record], ["uid::slab::0"])
     dataset = N2N3DDataset(
         {"records": [record], "splits": {"train": ["uid::slab::0"], "val": [], "test": []}},
-        manifest_path, "train", voxel_depth=4, identity_layers=0, mappings=["even->full"],
+        manifest_path, "train", voxel_depth=4, mappings=["even->full"],
     )
-    item = dataset[1]  # start = 2 -> window z = 2,3,4,5 (all in range)
-    assert int(item["slice_index"]) == 2
+    item = dataset[1]  # start = 4 -> window z = 4,5,6,7 (all in range)
+    assert int(item["slice_index"]) == 4
     for d in range(4):
-        z = 2 + d
+        z = 4 + d
         np.testing.assert_allclose(item["source"].numpy()[0, d, :, :],
                                    volumes["even"][z], atol=1e-5)
         np.testing.assert_allclose(item["target"].numpy()[0, d, :, :],
@@ -205,86 +194,35 @@ def test_middle_window_maps_source_to_target(workspace):
 # ---- boundary handling -----------------------------------------------------
 
 
-def test_head_overflow_zero_fills(workspace):
-    """start=-2 with identity_layers=2: the two leading window slices (z=-2,-1)
-    fall before slice 0 and must be zero-filled for both source and target.
+def test_windows_never_overflow(workspace):
+    """Every window lies fully inside the volume: with count=8, voxel_depth=4
+    the starts are {0, 4}, and each window's z in [start, start+4) is in-range
+    (no zero-fill, no boundary replication).
     """
     volumes = _base_volumes()
-    _write_volumes(workspace, "case_zero", volumes)
-    record = _record("uid::zero::0", "case_zero")
-    manifest_path = _write_manifest(workspace, [record], ["uid::zero::0"])
+    _write_volumes(workspace, "case_bounds", volumes)
+    record = _record("uid::bounds::0", "case_bounds")
+    manifest_path = _write_manifest(workspace, [record], ["uid::bounds::0"])
     dataset = N2N3DDataset(
-        {"records": [record], "splits": {"train": ["uid::zero::0"], "val": [], "test": []}},
-        manifest_path, "train", voxel_depth=4, identity_layers=2, mappings=["even->full"],
+        {"records": [record], "splits": {"train": ["uid::bounds::0"], "val": [], "test": []}},
+        manifest_path, "train", voxel_depth=4, mappings=["even->full"],
     )
-    item = dataset[0]  # start = -2 -> z = -2,-1 (zero), 0,1 (in range)
-    assert int(item["slice_index"]) == -2
-    zeros = np.zeros((SHAPE[1], SHAPE[2]), dtype=np.float32)
-    src = item["source"].numpy()
-    tgt = item["target"].numpy()
-    # z=-2,-1 zero-filled (and these are also the identity-buffer positions).
-    np.testing.assert_allclose(src[0, 0], zeros, atol=1e-5)
-    np.testing.assert_allclose(src[0, 1], zeros, atol=1e-5)
-    np.testing.assert_allclose(tgt[0, 0], zeros, atol=1e-5)
-    np.testing.assert_allclose(tgt[0, 1], zeros, atol=1e-5)
-    # z=0,1 are in-range: source=even, target=full (index >= identity_layers).
-    np.testing.assert_allclose(src[0, 2], volumes["even"][0], atol=1e-5)
-    np.testing.assert_allclose(tgt[0, 2], volumes["full"][0], atol=1e-5)
-    np.testing.assert_allclose(src[0, 3], volumes["even"][1], atol=1e-5)
-    np.testing.assert_allclose(tgt[0, 3], volumes["full"][1], atol=1e-5)
-
-
-def test_tail_overflow_replicates_boundary(workspace):
-    """A window that sticks past the last slice replicates the boundary slice
-    (start=4 with depth=5 covers z=4..8; z=8 -> replicate z=7).
-    """
-    volumes = _base_volumes()
-    _write_volumes(workspace, "case_tail", volumes)
-    record = _record("uid::tail::0", "case_tail")
-    manifest_path = _write_manifest(workspace, [record], ["uid::tail::0"])
-    dataset = N2N3DDataset(
-        {"records": [record], "splits": {"train": ["uid::tail::0"], "val": [], "test": []}},
-        manifest_path, "train", voxel_depth=5, identity_layers=0, mappings=["even->full"],
-    )
-    # start=4 -> z = 4,5,6,7 (in range), 8 (-> replicate z=7)
-    item = dataset[2]  # starts: 0,2,4 -> index 2 is start=4
-    assert int(item["slice_index"]) == 4
-    src = item["source"].numpy()
-    tgt = item["target"].numpy()
+    # start=0 -> z=0,1,2,3; start=4 -> z=4,5,6,7.  All in-range, no overflow.
+    item0 = dataset[0]
+    item1 = dataset[1]
+    assert int(item0["slice_index"]) == 0
+    assert int(item1["slice_index"]) == 4
+    src0 = item0["source"].numpy()
+    tgt0 = item0["target"].numpy()
+    for d in range(4):
+        np.testing.assert_allclose(src0[0, d], volumes["even"][d], atol=1e-5)
+        np.testing.assert_allclose(tgt0[0, d], volumes["full"][d], atol=1e-5)
+    src1 = item1["source"].numpy()
+    tgt1 = item1["target"].numpy()
     for d in range(4):
         z = 4 + d
-        np.testing.assert_allclose(src[0, d], volumes["even"][z], atol=1e-5)
-        np.testing.assert_allclose(tgt[0, d], volumes["full"][z], atol=1e-5)
-    # last slice (z=8) replicates the boundary slice z=7.
-    np.testing.assert_allclose(src[0, 4], volumes["even"][7], atol=1e-5)
-    np.testing.assert_allclose(tgt[0, 4], volumes["full"][7], atol=1e-5)
-
-
-def test_identity_layers_mirror_source(workspace):
-    """With identity_layers=2 the leading two in-range window slices have
-    target==source (identity / continuity constraint); the rest use the paired
-    target volume.  start=0 -> z=0,1 (identity), 2,3 (normal).
-    """
-    volumes = _base_volumes()
-    _write_volumes(workspace, "case_idt", volumes)
-    record = _record("uid::idt::0", "case_idt")
-    manifest_path = _write_manifest(workspace, [record], ["uid::idt::0"])
-    dataset = N2N3DDataset(
-        {"records": [record], "splits": {"train": ["uid::idt::0"], "val": [], "test": []}},
-        manifest_path, "train", voxel_depth=4, identity_layers=2, mappings=["even->full"],
-    )
-    item = dataset[1]  # starts: -2,0,2,4 -> index 1 is start=0
-    assert int(item["slice_index"]) == 0
-    src = item["source"].numpy()
-    tgt = item["target"].numpy()
-    # identity layers (index 0,1 -> z=0,1): target == source == even
-    for d, z in ((0, 0), (1, 1)):
-        np.testing.assert_allclose(src[0, d], volumes["even"][z], atol=1e-5)
-        np.testing.assert_allclose(tgt[0, d], volumes["even"][z], atol=1e-5)
-    # normal supervision (index 2,3 -> z=2,3): source=even, target=full
-    for d, z in ((2, 2), (3, 3)):
-        np.testing.assert_allclose(src[0, d], volumes["even"][z], atol=1e-5)
-        np.testing.assert_allclose(tgt[0, d], volumes["full"][z], atol=1e-5)
+        np.testing.assert_allclose(src1[0, d], volumes["even"][z], atol=1e-5)
+        np.testing.assert_allclose(tgt1[0, d], volumes["full"][z], atol=1e-5)
 
 
 # ---- metadata preservation -------------------------------------------------

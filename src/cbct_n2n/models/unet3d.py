@@ -24,7 +24,7 @@ D length as the input** (full-volume denoising, no centre-slice collapse).
 
 Consequence of fixed 2x pooling: the input depth must be large enough to
 survive ``depth`` rounds of halving, i.e. ``D >= 2 ** depth`` (the default
-``D=22`` comfortably satisfies ``base_channels=8, depth=3``).  Non-power-of-
+``D=16`` comfortably satisfies ``base_channels=16, depth=4``).  Non-power-of-
 two lengths are still accepted -- ``_align`` absorbs the off-by-one that
 ``ConvTranspose3d`` introduces -- as long as the minimum length holds.
 """

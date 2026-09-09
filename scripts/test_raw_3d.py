@@ -2,11 +2,10 @@
 
 3D counterpart to ``scripts/test_raw.py``.  The volumetric model maps a 5D
 slab ``[B, 1, D, H, W]`` to a same-D-length volume ``[B, 1, D, H, W]``.
-Inference slides a ``voxel_depth``-slice window across z (zero-filling
-out-of-range slices to mirror training), discards the leading
-``identity_layers`` continuity layers, and keeps the remaining denoised
-slices; H/W is padded to a multiple of 32.  Metrics are computed against
-the full-view volume, identical to ``test_raw.py``.
+Inference slides a non-overlapping ``voxel_depth``-slice window across z
+(strided by ``voxel_depth``, mirroring the training-time window placement)
+and keeps every denoised slice; H/W is padded to a multiple of 32.  Metrics
+are computed against the full-view volume, identical to ``test_raw.py``.
 
 Example (on the training server 192.168.36.102):
   python scripts/test_raw_3d.py \\
@@ -81,36 +80,23 @@ def _aggregate(rows: list[dict[str, float]], keys: tuple[str, ...]) -> dict[str,
 
 @torch.no_grad()
 def infer_volume_3d(model, volume: np.ndarray, voxel_depth: int,
-                    device: torch.device, batch_size: int = 2,
-                    identity_layers: int = 0) -> np.ndarray:
-    """Whole-volume 3D inference via a sequential sliding window with seamless
-    stitching.
+                    device: torch.device, batch_size: int = 2) -> np.ndarray:
+    """Whole-volume 3D inference via a non-overlapping D-slice sliding window.
 
     The model maps a ``[1, D, H, W]`` slab to a same-D-length denoised slab.
-    Windows are processed in z order.  When ``identity_layers > 0`` the
-    leading ``identity_layers`` slices of each window were trained as identity
-    (continuity) layers; at inference time they are filled with the trailing
-    ``identity_layers`` **denoised** slices of the previous window's output
-    (zero-filled for the very first window).  This stitches adjacent windows
-    seamlessly along z, matching the training-time continuity constraint.
-    Only the trailing ``voxel_depth - identity_layers`` slices of each window
-    contribute to the final output.
-
-    Because window ``k`` depends on window ``k-1``'s output, windows are
-    processed **sequentially**; ``batch_size`` is retained for interface
-    compatibility but no longer parallelises across sliding windows.
+    The volume is split into consecutive ``voxel_depth``-slice windows strided
+    by ``voxel_depth`` (matching the non-overlapping training-time placement).
+    The final window is zero-padded to a full ``voxel_depth`` when ``n %
+    voxel_depth != 0``; its extra (padded) output slices are discarded so the
+    returned volume has exactly ``n`` slices -- the same as the input.
     """
     source = np.asarray(volume)
     if source.ndim != 3:
         raise ValueError("volume must have shape (z, y, x)")
     if voxel_depth < 1:
         raise ValueError("voxel_depth must be positive")
-    identity_layers = int(identity_layers)
-    if identity_layers < 0 or identity_layers >= voxel_depth:
-        raise ValueError("identity_layers must satisfy 0 <= identity_layers < voxel_depth")
 
     n = int(source.shape[0])
-    denoise = voxel_depth - identity_layers  # effective denoised slices per window
     model.eval()
 
     # Pad H/W once; the padding is identical for every slice (H/W uniform).
@@ -124,39 +110,27 @@ def infer_volume_3d(model, volume: np.ndarray, voxel_depth: int,
     padded = np.stack(padded_slices, axis=0)  # [n, Hp, Wp]
     Hp, Wp = padded.shape[-2], padded.shape[-1]
 
-    # Sequential pipeline: window k's leading identity slices carry window k-1's
-    # trailing denoised output, so adjacent windows stitch seamlessly along z.
-    out = np.zeros_like(padded)  # [n, Hp, Wp]
-    prev_context: np.ndarray | None = None  # trailing denoised slices of prev window
-
-    for z_start in range(0, n, denoise):
-        w_start = z_start - identity_layers
+    # Non-overlapping windows strided by voxel_depth; the final window is
+    # zero-padded to a full voxel_depth (its extra output slices are dropped).
+    z_starts: list[int] = list(range(0, n, voxel_depth))
+    windows: list[np.ndarray] = []
+    for z_start in z_starts:
         win = np.zeros((voxel_depth, Hp, Wp), dtype=np.float32)
+        z_end = min(z_start + voxel_depth, n)
+        win[:z_end - z_start] = padded[z_start:z_end]
+        windows.append(win)
 
-        # Trailing denoise slices: the raw (noisy) volume for this window.
-        for i in range(identity_layers, voxel_depth):
-            z = w_start + i
-            if 0 <= z < n:
-                win[i] = padded[z]
-            # out-of-range -> zero (mirrors training-time slab assembly)
+    preds: list[np.ndarray] = []
+    for start in range(0, len(windows), batch_size):
+        batch = torch.from_numpy(np.stack(windows[start:start + batch_size])).unsqueeze(1).to(device)
+        pred = model(batch).detach().float().cpu().numpy()[:, 0]  # [B, D, Hp, Wp]
+        preds.append(pred)
+    all_pred = np.concatenate(preds, axis=0)  # [num_windows, D, Hp, Wp]
 
-        # Leading identity slices: previous window's denoised output tail.
-        # The first window has no predecessor -> these slices stay zero.
-        if prev_context is not None:
-            win[:identity_layers] = prev_context
-
-        inp = torch.from_numpy(win).unsqueeze(0).unsqueeze(0).to(device)  # [1,1,D,Hp,Wp]
-        pred = model(inp).float().cpu().numpy()[0, 0]  # [D, Hp, Wp]
-
-        # Keep only the trailing denoise slices for the output.
-        denoised = pred[identity_layers:]  # [denoise, Hp, Wp]
-        z_end = min(z_start + denoise, n)
-        out[z_start:z_end] = denoised[:z_end - z_start]
-
-        # Next window's identity input = this window's trailing denoised output
-        # (indices denoise..voxel_depth-1 map to z in
-        # [z_start+denoise-identity_layers, z_start+denoise)).
-        prev_context = pred[denoise:]
+    out = np.zeros_like(padded)  # [n, Hp, Wp]
+    for k, z_start in enumerate(z_starts):
+        z_end = min(z_start + voxel_depth, n)
+        out[z_start:z_end] = all_pred[k][:z_end - z_start]
 
     restored = [unpad(slice_, padding) for slice_ in out]
     return np.stack(restored).astype(np.float32)
@@ -182,8 +156,7 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     base = manifest_path.parent
     data_range = float(config["data"]["metric_data_range"])
-    voxel_depth = int(config["data"].get("voxel_depth", 22))
-    identity_layers = int(config["data"].get("identity_layers", 0))
+    voxel_depth = int(config["data"].get("voxel_depth", 16))
     arch = config.get("model", {}).get("arch", "unet3d")
 
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
@@ -223,7 +196,7 @@ def main() -> int:
                 print(f"[skip] {key} {kind}: shape mismatch source={source.shape} full={full.shape}", flush=True)
                 continue
             prediction = infer_volume_3d(model, source, voxel_depth, device,
-                                         args.batch_size, identity_layers)
+                                         args.batch_size)
             metrics = evaluate_volume(prediction, np.asarray(full), data_range)
             entry = {
                 "key": key,

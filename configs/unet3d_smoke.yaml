@@ -12,11 +12,11 @@ data:
   manifest: outputs/smoke-raw/splits.json
   metric_data_range: 4.0
   # Any positive integer >= 2^depth (fixed 2x pooling downsamples D each
-  # stage).  15 -> 7 -> 3 -> 1 over depth=3 stages.  No odd-depth constraint
-  # anymore (target is the same D-slice window, not a centre slice).
-  voxel_depth: 15
-  # Optional: leading D slices learn identity (continuity constraint).
-  # identity_layers: 2
+  # stage).  16 -> 8 -> 4 -> 2 over depth=3 stages.  No odd-depth
+  # constraint anymore (target is the same D-slice window, not a centre
+  # slice).  Training windows are non-overlapping (stride D), so D never
+  # overflows the volume bounds.
+  voxel_depth: 16
   split_ratios: [0.8, 0.1, 0.1]
   seed: 42
   augment: true
