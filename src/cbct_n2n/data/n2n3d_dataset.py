@@ -15,12 +15,11 @@ the 3D UNet is now trained:
   returned), so the rest of the supervision logic is unchanged.  The model
   denoises the whole input volume: output D == input D.
 
-Windows are keyed by their *start* slice index and are placed so they
-never stick past the volume bounds: ``start`` runs from ``0`` with stride
-``voxel_depth`` up to ``record_depth - voxel_depth`` (inclusive when it
-aligns with the stride), so every window's ``z in [start, start+D)`` lies
-fully inside ``[0, record_depth)``.  No slice is ever zero-filled or
-boundary-replicated during training.
+Windows are keyed by their *start* slice index: ``start`` runs from ``0``
+with stride ``stride`` (default 4), and every window's end ``start +
+voxel_depth`` stays ``<= record_depth`` (no out-of-range slice, no
+zero-fill, no boundary replication).  Consecutive windows overlap by
+``voxel_depth - stride`` slices.
 
 We still inherit from :class:`N2NDataset` so the manifest parsing,
 mapping / residual logic, and split routing stay in one place.  The
@@ -50,19 +49,27 @@ class N2N3DDataset(N2NDataset):
         the D length of both ``source`` and ``target``.  Any positive
         integer is accepted (default 16).  Must be ``>= 2 ** model.depth``
         for the fixed 2x-pooling UNet3D to be able to downsample along D.
+    stride:
+        Step between consecutive window starts along the D axis (default 4).
+        Windows overlap by ``voxel_depth - stride`` slices when
+        ``stride < voxel_depth``; ``stride == voxel_depth`` reproduces the
+        non-overlapping tiling.  Every window end ``start + voxel_depth`` is
+        kept ``<= record_depth`` so no slice is ever out of range.
     All other keyword arguments are forwarded to :class:`N2NDataset`.
     """
 
-    def __init__(self, *args: Any, voxel_depth: int = 16, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, voxel_depth: int = 16,
+                 stride: int = 4, **kwargs: Any) -> None:
         if voxel_depth < 1:
             raise ValueError("voxel_depth must be positive")
+        if stride < 1:
+            raise ValueError("stride must be positive")
         super().__init__(*args, **kwargs)
         self.voxel_depth = int(voxel_depth)
+        self.stride = int(stride)
         # Windows are keyed by their *start* slice index.  ``start`` runs
-        # from 0 with stride ``voxel_depth`` up to
-        # ``record_depth - voxel_depth`` (inclusive when it aligns with the
-        # stride), so every window lies fully inside the volume -- no slice
-        # is ever zero-filled or boundary-replicated during training.
+        # from 0 with stride ``self.stride``, and every window end
+        # ``start + voxel_depth <= count`` (no out-of-range slice).
         self.slices = self._build_start_slices()
 
     # ---- helpers ----------------------------------------------------------
@@ -73,7 +80,9 @@ class N2N3DDataset(N2NDataset):
         The parent :class:`N2NDataset` enumerates one sample per anchor slice
         (``z = 0 .. count-1``).  For the volumetric model the window is placed
         by its start index instead: ``start`` runs from ``0`` with stride
-        ``voxel_depth`` up to ``record_depth - voxel_depth`` inclusive.  Each
+        ``self.stride`` up to ``count - voxel_depth`` inclusive (when it
+        aligns with the stride), so every window end ``start + voxel_depth``
+        stays ``<= count`` -- no out-of-range slice.  Each
         ``(start, mapping, residual)`` combination becomes one sample, reusing
         the parent's already-built ``self.volumes`` / ``self.mappings`` /
         ``self.residual_tags``.
@@ -84,9 +93,9 @@ class N2N3DDataset(N2NDataset):
             count = int(next(iter(memmaps.values())).shape[0])
             available = [tag for tag in self.residual_tags
                          if RESIDUAL_VOLUMES[tag] in memmaps]
-            # start from 0, stride voxel_depth, never past count - voxel_depth
-            # (so the window tail stays inside the volume).
-            for start in range(0, count - self.voxel_depth + 1, self.voxel_depth):
+            # start from 0, stride self.stride, end (start + voxel_depth)
+            # never past count.
+            for start in range(0, count - self.voxel_depth + 1, self.stride):
                 for source, target in self.mappings:
                     slices.append((index, start, source, target, None))
                     for tag in available:

@@ -97,14 +97,15 @@ def _write_manifest(workspace, records, split_keys, split="train"):
     return manifest_path
 
 
-def _dataset(workspace, voxel_depth, mappings=("even->full",)):
+def _dataset(workspace, voxel_depth, stride=4, mappings=("even->full",)):
     volumes = _base_volumes()
     _write_volumes(workspace, "case", volumes)
     record = _record("uid::case::0", "case")
     manifest_path = _write_manifest(workspace, [record], ["uid::case::0"])
     return N2N3DDataset(
         {"records": [record], "splits": {"train": ["uid::case::0"], "val": [], "test": []}},
-        manifest_path, "train", voxel_depth=voxel_depth, mappings=list(mappings),
+        manifest_path, "train", voxel_depth=voxel_depth, stride=stride,
+        mappings=list(mappings),
     )
 
 
@@ -133,27 +134,40 @@ def test_accepts_even_voxel_depth(workspace):
 
 
 def test_start_index_enumeration(workspace):
-    """Windows are keyed by start index: 0, stride voxel_depth, never past
-    count - voxel_depth (so the window never overflows the volume).
+    """Windows are keyed by start index: 0, stride=4 (default), overlapping
+    by voxel_depth - stride slices.
 
-    With count=8, voxel_depth=4 the starts are {0, 4} (2 samples for a single
-    even->full mapping).
+    With count=8, voxel_depth=4, stride=4 the starts are {0, 4} (2 samples
+    for a single even->full mapping; stride == voxel_depth -> non-overlap).
     """
-    dataset = _dataset(workspace, voxel_depth=4)
+    dataset = _dataset(workspace, voxel_depth=4, stride=4)
     starts = sorted(int(dataset[i]["slice_index"]) for i in range(len(dataset)))
     assert starts == [0, 4]
     assert len(dataset) == 2
 
 
-def test_start_index_enumeration_uneven_count(workspace):
-    """When count is not a multiple of voxel_depth the last start is still
-    within bounds: count=8, voxel_depth=5 -> starts {0} only (start=3 would
-    overflow, so it is dropped).
+def test_start_index_enumeration_overlap(workspace):
+    """stride < voxel_depth makes windows overlap.
+
+    count=8, voxel_depth=4, stride=2 -> starts {0, 2, 4} (3 samples; the end
+    2+4=6 <= 8 and 4+4=8 <= 8 are in-range, start=6 would end at 10 > 8 so
+    it is dropped).  Consecutive windows overlap by 2 slices.
     """
-    dataset = _dataset(workspace, voxel_depth=5)
+    dataset = _dataset(workspace, voxel_depth=4, stride=2)
     starts = sorted(int(dataset[i]["slice_index"]) for i in range(len(dataset)))
-    assert starts == [0]
-    assert len(dataset) == 1
+    assert starts == [0, 2, 4]
+    assert len(dataset) == 3
+
+
+def test_stride_must_be_positive(workspace):
+    volumes = _base_volumes()
+    _write_volumes(workspace, "case_stride", volumes)
+    record = _record("uid::stride::0", "case_stride")
+    manifest = {"records": [record], "splits": {"train": ["uid::stride::0"], "val": [], "test": []}}
+    manifest_path = _write_manifest(workspace, [record], ["uid::stride::0"])
+    with pytest.raises(ValueError, match="positive"):
+        N2N3DDataset(manifest, manifest_path, "train", voxel_depth=4, stride=0,
+                     mappings=["even->full"])
 
 
 # ---- forward / target shape ------------------------------------------------
@@ -195,9 +209,9 @@ def test_middle_window_maps_source_to_target(workspace):
 
 
 def test_windows_never_overflow(workspace):
-    """Every window lies fully inside the volume: with count=8, voxel_depth=4
-    the starts are {0, 4}, and each window's z in [start, start+4) is in-range
-    (no zero-fill, no boundary replication).
+    """When count is a multiple of voxel_depth every window lies fully inside
+    the volume: with count=8, voxel_depth=4 the starts are {0, 4}, and each
+    window's z in [start, start+4) is in-range (no replication).
     """
     volumes = _base_volumes()
     _write_volumes(workspace, "case_bounds", volumes)
@@ -223,6 +237,33 @@ def test_windows_never_overflow(workspace):
         z = 4 + d
         np.testing.assert_allclose(src1[0, d], volumes["even"][z], atol=1e-5)
         np.testing.assert_allclose(tgt1[0, d], volumes["full"][z], atol=1e-5)
+
+
+def test_last_window_covers_tail_without_overflow(workspace):
+    """When count - voxel_depth is a multiple of stride, the last window ends
+    exactly at count, so the tail slices are covered with no out-of-range
+    slice (no boundary replication needed).
+
+    count=8, voxel_depth=4, stride=2 -> starts {0, 2, 4}; start=4 covers
+    z=4,5,6,7 (the whole tail) and end=8 == count is in-range.
+    """
+    volumes = _base_volumes()
+    _write_volumes(workspace, "case_tailcov", volumes)
+    record = _record("uid::tailcov::0", "case_tailcov")
+    manifest_path = _write_manifest(workspace, [record], ["uid::tailcov::0"])
+    dataset = N2N3DDataset(
+        {"records": [record], "splits": {"train": ["uid::tailcov::0"], "val": [], "test": []}},
+        manifest_path, "train", voxel_depth=4, stride=2, mappings=["even->full"],
+    )
+    starts = sorted(int(dataset[i]["slice_index"]) for i in range(len(dataset)))
+    assert starts == [0, 2, 4]
+    item = dataset[2]  # start = 4
+    assert int(item["slice_index"]) == 4
+    src = item["source"].numpy()
+    tgt = item["target"].numpy()
+    for d, z in ((0, 4), (1, 5), (2, 6), (3, 7)):
+        np.testing.assert_allclose(src[0, d], volumes["even"][z], atol=1e-5)
+        np.testing.assert_allclose(tgt[0, d], volumes["full"][z], atol=1e-5)
 
 
 # ---- metadata preservation -------------------------------------------------
