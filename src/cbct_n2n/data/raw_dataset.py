@@ -24,11 +24,9 @@ class RawPairedSliceDataset(Dataset):
     """Full axial slices from relative-path float32 RAW reconstruction records."""
 
     def __init__(self, manifest: dict[str, Any], manifest_path: str | Path, split: str, *, augment: bool = False,
-                 supervision_mode: str = "full_view", max_slices_per_case: int | None = None):
+                 supervision_mode: str = "full_view"):
         if supervision_mode not in {"full_view", "half_view_n2n"}:
             raise ValueError(f"Unsupported supervision mode: {supervision_mode}")
-        if max_slices_per_case is not None and max_slices_per_case < 1:
-            raise ValueError("max_slices_per_case must be positive when provided")
         self.augment = augment
         self.supervision_mode = supervision_mode
         base = Path(manifest_path).resolve().parent
@@ -47,7 +45,7 @@ class RawPairedSliceDataset(Dataset):
             full = np.memmap(base / outputs["full"], dtype=dtype, mode="r", shape=shape)
             index = len(self.volumes)
             self.volumes.append((str(item.get("case_id", record_key)), even, odd, full))
-            count = min(shape[0], max_slices_per_case or shape[0])
+            count = shape[0]
             self.slices.extend((index, z, source_kind) for z in range(count) for source_kind in ("even", "odd"))
         if not self.volumes:
             raise ValueError(f"No successful reconstruction records in split {split!r}")

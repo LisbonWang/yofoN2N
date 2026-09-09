@@ -24,7 +24,6 @@ data:
   augment: true
   # 计划 A：仅 half -> full 监督（两条方向同 epoch 混合）
   mappings: [even->full, odd->full]
-  max_slices_per_case: 120
 
 model:
   in_channels: 1

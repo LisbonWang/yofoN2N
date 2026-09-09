@@ -33,7 +33,6 @@ data:
   # 计划 C：仅 half -> full.dn 监督（full.dn = E2 对 full.raw 的降噪输出，
   # 两条方向同 epoch 混合；epoch 样本量与 E2 相同 = 19920）
   mappings: [even->full.dn, odd->full.dn]
-  max_slices_per_case: 120
 
 model:
   in_channels: 1

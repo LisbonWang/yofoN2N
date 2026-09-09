@@ -28,11 +28,10 @@ def main() -> int:
     data_cfg, train_cfg = config["data"], config["training"]
     seed_everything(int(data_cfg["seed"]))
     manifest = load_manifest(args.manifest or data_cfg["manifest"])
-    max_slices = data_cfg.get("max_slices_per_case")
     supervision_mode = str(data_cfg.get("supervision_mode", "full_view"))
-    train_data = PairedSliceDataset(manifest, "train", augment=bool(data_cfg.get("augment", True)), max_slices_per_case=max_slices,
+    train_data = PairedSliceDataset(manifest, "train", augment=bool(data_cfg.get("augment", True)),
                                     supervision_mode=supervision_mode)
-    val_data = PairedSliceDataset(manifest, "val", augment=False, max_slices_per_case=max_slices,
+    val_data = PairedSliceDataset(manifest, "val", augment=False,
                                   supervision_mode=supervision_mode)
     loader_args = {"batch_size": int(train_cfg["batch_size"]), "num_workers": int(train_cfg["num_workers"]), "pin_memory": True}
     train_loader = DataLoader(train_data, shuffle=True, **loader_args)

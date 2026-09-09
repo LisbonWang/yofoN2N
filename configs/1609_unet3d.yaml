@@ -1,0 +1,56 @@
+# 数据1（AIReduceNoise）· 3D UNet · half->half N2N 自监督训练（实验）
+# 数据：Mode2_1609/Mode3_1609 重建卷（/data/raid0/yyc/AIReduceNoise/，study 级 manifest splits_1609.json）
+# 监督：N2N3DDataset 显式方向映射 even <-> odd（3D slab source + 同 D 维 3D target，整卷去噪）；
+#       D 维前 identity_layers=2 层做恒等映射（连续性约束），窗口越界 source/target 均填 0。
+# 模型：UNet3D base16/depth4（固定 2x 池化，输出 D = 输入 D = voxel_depth）
+# 运行（服务器 192.168.36.102，卡 1）：
+#   /opt/anaconda3/envs/pytorch201/bin/python scripts/train_voxel.py \
+#     --config configs/1609_unet3d.yaml \
+#     --manifest /data/raid0/yyc/AIReduceNoise/splits_1609.json \
+#     --run-dir runs/1609_n2n_3d
+reconstruction:
+  source_root: '/data/raid0/yyc/AIReduceNoise'
+  output_root: '/data/raid0/yyc/AIReduceNoise/PDL'
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+
+data:
+  manifest: /data/raid0/yyc/AIReduceNoise/splits_1609.json
+  metric_data_range: 4.0
+  seed: 42
+  augment: true
+  # 显式映射方向：even <-> odd 双向互监督（等价旧 supervision_mode: half_view_n2n）
+  mappings: [even->odd, odd->even]
+  # 全 360 层训练：每 study 全部切片都参与
+  # 切片层数（任意正整数，默认 22，需 >= 2^depth=16）：source/target 同为连续 D 张切片；
+  # 推理滑窗步长 = D−identity_layers = 20，360 = 20×18 恰好对齐（零越界）。
+  voxel_depth: 22
+  # D 维前 identity_layers 层做恒等映射（连续性约束）：target=source、学 output==input；
+  # 其余层正常 N2N 监督；窗口越界（anchor 靠近卷首尾）时 source/target 均填 0。
+  # 推理时丢弃这前 identity_layers 层（见 scripts/test_raw_3d.py）。
+  identity_layers: 2
+
+model:
+  arch: unet3d
+  in_channels: 1
+  out_channels: 1
+  base_channels: 16
+  depth: 4
+  residual: true
+
+training:
+  epochs: 100
+  batch_size: 2
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  # 并行数据加载：多进程预取让数据加载与 GPU 计算重叠（消除 GPU 空等）。
+  # 启动命令需配 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 防 worker 线程 oversubscribe。
+  num_workers: 8
+  amp: true
+  gradient_clip: 1.0
+  patience: 15
+  device: cuda:1
+  run_dir: runs/1609_n2n_3d
+  history_metrics: true
+  plot_interval: 5

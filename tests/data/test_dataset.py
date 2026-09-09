@@ -89,12 +89,12 @@ def test_augmented_training_preserves_source_kind_and_batches_non_square(tmp_pat
     assert batch["source"].shape == (2, 1, 32, 64)
 
 
-def test_dataset_limits_each_case_to_requested_axial_slices(tmp_path):
+def test_dataset_uses_all_axial_slices(tmp_path):
     volume = np.arange(3 * 2 * 2, dtype=np.float32).reshape(3, 2, 2) - 2
     for kind in ("even", "odd", "full"):
         np.save(tmp_path / f"{kind}.npy", volume)
     record = {"case_id": "c", **{f"{kind}_path": str(tmp_path / f"{kind}.npy") for kind in ("even", "odd", "full")}}
     manifest = {"records": [record], "splits": {"train": ["c"]}}
-    ds = PairedSliceDataset(manifest, "train", augment=False, max_slices_per_case=1)
-    assert len(ds) == 2
+    ds = PairedSliceDataset(manifest, "train", augment=False)
+    assert len(ds) == 6  # 3 slices x 2 source kinds (even/odd), no per-case cap
     np.testing.assert_allclose(ds[0]["source"][..., :2, :2], volume[0][None])

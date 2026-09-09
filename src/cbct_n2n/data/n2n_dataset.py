@@ -133,22 +133,14 @@ class N2NDataset(Dataset):
 
     Base (non-augmented) samples are always kept; residual samples are appended.
 
-    ``max_slices_per_case`` caps the per-case slice count (``z < cap`` from the
-    start of the volume).  When omitted (None) every slice of the volume is
-    used.  **Warning (2026-09-07): capping to a prefix biases training to the
-    first z-range of the anatomy (e.g. 120/360 leaves the mandible/dentition
-    segment unseen); only cap when the epoch length forces it, and prefer
-    striding over the full z-range over a prefix.
+    Every slice of every volume is used (no per-case slice cap).
     """
 
     def __init__(self, manifest: dict[str, Any], manifest_path: str | Path, split: str, *,
                  mappings: Iterable[str] | None = None,
                  supervision_mode: str | None = None,
                  residuals: Iterable[str] | None = None,
-                 augment: bool = False,
-                 max_slices_per_case: int | None = None):
-        if max_slices_per_case is not None and max_slices_per_case < 1:
-            raise ValueError("max_slices_per_case must be positive when provided")
+                 augment: bool = False):
         resolved_mappings = _normalize_mappings(mappings, supervision_mode)
         residual_tags = _normalize_residuals(residuals)
         self.augment = augment
@@ -196,7 +188,7 @@ class N2NDataset(Dataset):
             index = len(self.volumes)
             case_id = str(item.get("case_id", record_key))
             self.volumes.append({"key": record_key, "case_id": case_id, "memmaps": memmaps})
-            count = min(shape[0], max_slices_per_case or shape[0])
+            count = shape[0]
             available = [tag for tag in residual_tags
                          if RESIDUAL_VOLUMES[tag] in memmaps]
             for z in range(count):

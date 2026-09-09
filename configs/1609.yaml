@@ -24,7 +24,6 @@ data:
   # 可选残差增强：base 样本保留、每个 tag 每层追加 1 样本；
   # 依赖 full.bhc / full.marfi / full.marfi.bhc 卷，bhc+marfi 同开时自动追加 marfibhc。
   # residuals: [bhc, marfi]
-  max_slices_per_case: 120
 
 model:
   in_channels: 1

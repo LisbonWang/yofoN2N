@@ -106,6 +106,9 @@ def compute_val_metrics(model, loader, device: torch.device, data_range: float =
         prediction = model(source)
         pred_np = prediction.detach().float().cpu().numpy()[:, 0]
         target_np = target.detach().float().cpu().numpy()[:, 0]
+        if pred_np.ndim == 4:  # 3D output [B, D, H, W]: fold D into the batch axis
+            pred_np = pred_np.reshape(-1, pred_np.shape[-2], pred_np.shape[-1])
+            target_np = target_np.reshape(-1, target_np.shape[-2], target_np.shape[-1])
         if pred_np.ndim != 3 or pred_np.shape[0] == 0:
             continue
         metrics = compute_metrics(pred_np, target_np, data_range)

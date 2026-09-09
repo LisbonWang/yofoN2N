@@ -12,9 +12,24 @@ from torch.utils.data import DataLoader
 
 from cbct_n2n.config import load_config
 from cbct_n2n.data.n2n_dataset import N2NDataset
-from cbct_n2n.models import UNet2D
+from cbct_n2n.models import UNet2D, UNet2D_DS
 from cbct_n2n.training.checkpoint import load_checkpoint
 from cbct_n2n.training.trainer import fit, seed_everything
+
+
+def build_model(arch: str, model_cfg: dict) -> "torch.nn.Module":
+    """Construct the requested 2D architecture from the ``model`` config block.
+
+    ``arch`` is the dispatch selector and is dropped before forwarding to the
+    constructor (neither model accepts an ``arch`` kwarg).  Default ``unet2d``
+    preserves the historical behaviour of this script.
+    """
+    cfg = {k: v for k, v in model_cfg.items() if k != "arch"}
+    if arch == "unet2d":
+        return UNet2D(**cfg)
+    if arch == "unet2d_ds":
+        return UNet2D_DS(**cfg)
+    raise ValueError(f"Unknown model.arch {arch!r}; expected one of: unet2d, unet2d_ds")
 
 
 def main() -> int:
@@ -27,6 +42,8 @@ def main() -> int:
                         help="Load model weights only (cold optimizer/scheduler, start from epoch 0). "
                              "Use for fine-tune-style plans whose supervision target is derived from a "
                              "previous converged run (e.g. teacher-denoised targets).")
+    parser.add_argument("--arch", choices=("unet2d", "unet2d_ds"), default=None,
+                        help="Override model.arch from the config (default: unet2d).")
     args = parser.parse_args()
     config = load_config(args.config)
     data_cfg, train_cfg = config["data"], config["training"]
@@ -37,18 +54,20 @@ def main() -> int:
     mappings = data_cfg.get("mappings")
     residuals = data_cfg.get("residuals")
     supervision_mode = str(data_cfg.get("supervision_mode", "full_view"))
-    max_slices = data_cfg.get("max_slices_per_case")
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     train_data = N2NDataset(manifest, args.manifest, "train",
                             mappings=mappings, residuals=residuals, supervision_mode=supervision_mode,
-                            augment=bool(data_cfg.get("augment", True)), max_slices_per_case=max_slices)
+                            augment=bool(data_cfg.get("augment", True)))
     val_data = N2NDataset(manifest, args.manifest, "val",
                           mappings=mappings, residuals=residuals, supervision_mode=supervision_mode,
-                          augment=False, max_slices_per_case=max_slices)
+                          augment=False)
     loader_args = {"batch_size": int(train_cfg["batch_size"]), "num_workers": int(train_cfg.get("num_workers", 0)), "pin_memory": True}
     train_loader = DataLoader(train_data, shuffle=True, **loader_args)
     val_loader = DataLoader(val_data, shuffle=False, **loader_args)
-    model = UNet2D(**config["model"])
+    arch = args.arch or str(config.get("model", {}).get("arch", "unet2d"))
+    model = build_model(arch, config["model"])
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[arch] {arch} | params={n_params:,}", flush=True)
     requested = str(train_cfg.get("device", "cuda"))
     device = torch.device(requested if requested != "cuda" or torch.cuda.is_available() else "cpu")
     model.to(device)

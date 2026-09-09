@@ -11,7 +11,6 @@ reconstruction:
 data:
   manifest: outputs/smoke-raw/splits.json
   metric_data_range: 4.0
-  max_slices_per_case: 16
   split_ratios: [0.8, 0.1, 0.1]
   seed: 42
   augment: true

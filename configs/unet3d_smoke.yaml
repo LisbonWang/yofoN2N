@@ -1,0 +1,44 @@
+reconstruction:
+  source_root: 'Z:\raid5\共享数据\典型图像\长安管口-PDL'
+  output_root: 'Z:\raid5\共享数据\典型图像\长安管口-PDL-N2N-Pairs'
+  xday_dir: 'D:\XDay Release\XDay617.2'
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+  per_view_files:
+    projectionMatrix.bin: 84
+
+data:
+  manifest: outputs/smoke-raw/splits.json
+  metric_data_range: 4.0
+  # Any positive integer >= 2^depth (fixed 2x pooling downsamples D each
+  # stage).  15 -> 7 -> 3 -> 1 over depth=3 stages.  No odd-depth constraint
+  # anymore (target is the same D-slice window, not a centre slice).
+  voxel_depth: 15
+  # Optional: leading D slices learn identity (continuity constraint).
+  # identity_layers: 2
+  split_ratios: [0.8, 0.1, 0.1]
+  seed: 42
+  augment: true
+
+model:
+  arch: unet3d
+  in_channels: 1
+  out_channels: 1
+  base_channels: 8
+  depth: 3
+  residual: true
+  # Fixed 2x pooling along all three axes (D/H/W); output D == input D.
+
+training:
+  epochs: 10
+  # Smaller batch because 5D tensors are ~16x the slice footprint.
+  batch_size: 1
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  num_workers: 0
+  amp: true
+  gradient_clip: 1.0
+  patience: 15
+  device: cuda
+  run_dir: runs/unet3d_smoke

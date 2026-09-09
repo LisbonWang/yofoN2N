@@ -28,7 +28,6 @@ data:
   mappings: [even->odd, odd->even, even->full, odd->full]
   # 可选残差增强：与 E1 保持一致暂不开启（base 样本保留、每 tag 每层追加 1 样本）
   # residuals: [bhc, marfi]
-  max_slices_per_case: 120
 
 model:
   in_channels: 1

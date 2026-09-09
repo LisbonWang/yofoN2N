@@ -360,24 +360,6 @@ def test_no_usable_records_raises(tmp_path):
         )
 
 
-def test_max_slices_per_case_limits_count(tmp_path):
-    volumes = _base_volumes()
-    _write_volumes(tmp_path, "case", volumes)
-    record = _record("s1", "case")
-    manifest_path = _write_manifest(tmp_path, [record], ["s1"])
-
-    dataset = N2NDataset(
-        {"records": [record], "splits": {"train": ["s1"], "val": [], "test": []}},
-        manifest_path,
-        "train",
-        mappings=["even->odd", "odd->even"],
-        max_slices_per_case=1,
-    )
-
-    assert len(dataset) == 2  # 1 slice x 2 directions
-    assert {item["slice_index"] for item in (dataset[0], dataset[1])} == {0}
-
-
 def test_dataloader_batches_base_and_residual_samples(tmp_path):
     volumes = _base_volumes()
     volumes["full.bhc"] = volumes["full"] + 0.5

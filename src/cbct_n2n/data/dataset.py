@@ -20,6 +20,11 @@ def pad_to_multiple(image: np.ndarray, multiple: int = 32) -> tuple[np.ndarray, 
         raise ValueError("image must be 2D and multiple must be positive")
     h, w = image.shape
     padded_shape = (h + (-h % multiple), w + (-w % multiple))
+    if padded_shape == (h, w):
+        # Already aligned: skip the zero-alloc + full copy.  Callers either
+        # copy again (torch.from_numpy(...).clone()) or stack the slice into a
+        # fresh array, so returning the input array is safe.
+        return image, Padding((h, w), padded_shape)
     padded = np.zeros(padded_shape, dtype=image.dtype)
     padded[:h, :w] = image
     return padded, Padding((h, w), padded_shape)
@@ -35,10 +40,8 @@ def unpad(image: np.ndarray, padding: Padding) -> np.ndarray:
 class PairedSliceDataset(Dataset):
     """Full axial slices with full-view or cross-subset supervision."""
 
-    def __init__(self, manifest: dict[str, Any], split: str, augment: bool = False, max_slices_per_case: int | None = None,
+    def __init__(self, manifest: dict[str, Any], split: str, augment: bool = False,
                  supervision_mode: str = "full_view"):
-        if max_slices_per_case is not None and max_slices_per_case < 1:
-            raise ValueError("max_slices_per_case must be positive when provided")
         if supervision_mode not in {"full_view", "half_view_n2n"}:
             raise ValueError(f"Unsupported supervision mode: {supervision_mode}")
         self.augment = augment
@@ -56,7 +59,7 @@ class PairedSliceDataset(Dataset):
                 raise ValueError(f"Invalid paired volumes for {case_id}: even={even.shape}, odd={odd.shape}, full={full.shape}")
             index = len(self.volumes)
             self.volumes.append((case_id, even, odd, full))
-            slice_count = min(even.shape[0], max_slices_per_case or even.shape[0])
+            slice_count = even.shape[0]
             self.slices.extend((index, z, source_kind) for z in range(slice_count) for source_kind in ("even", "odd"))
 
     def __len__(self) -> int:
