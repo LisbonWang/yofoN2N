@@ -27,9 +27,31 @@ import numpy as np
 import torch
 
 from cbct_n2n.config import load_config
-from cbct_n2n.models import UNet2D
+from cbct_n2n.models import UNet2D, UNet2D_DS, UNet3D
 from cbct_n2n.training.checkpoint import load_checkpoint
-from cbct_n2n.training.inference import evaluate_volume, infer_volume, write_raw_volume
+from cbct_n2n.training.inference import (
+    evaluate_volume,
+    infer_volume,
+    infer_volume_3d,
+    infer_volume_3d_tiled,
+    write_raw_volume,
+)
+
+
+def build_model(arch: str, model_cfg: dict) -> "torch.nn.Module":
+    """Construct a 2D arch from the ``model`` config block (arch dispatch).
+
+    Mirrors ``train_sparse_dense.build_model``: ``arch`` is stripped before
+    forwarding to the constructor (neither model accepts an ``arch`` kwarg).
+    """
+    cfg = {k: v for k, v in model_cfg.items() if k != "arch"}
+    if arch == "unet2d":
+        return UNet2D(**cfg)
+    if arch == "unet2d_ds":
+        return UNet2D_DS(**cfg)
+    if arch == "unet3d":
+        return UNet3D(**cfg)
+    raise ValueError(f"Unknown model.arch {arch!r}; expected one of: unet2d, unet2d_ds, unet3d")
 
 
 def _resolve_output(record: dict[str, Any], logical: str) -> str | None:
@@ -57,6 +79,20 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--arch", choices=("unet2d", "unet2d_ds", "unet3d"), default=None,
+                        help="Override model.arch from the config (default: read config.model.arch).")
+    parser.add_argument("--full-only", action="store_true",
+                        help="Only denoise the full-view volume; skip copying even/odd sources.")
+    parser.add_argument("--no-metrics", action="store_true",
+                        help="Skip per-case full_metrics.json and the overview (write raw volumes only).")
+    parser.add_argument("--tiled", action="store_true",
+                        help="Use overlapping-tile 3D inference (for 256x256x128-window models).")
+    parser.add_argument("--patch-hw", type=int, default=256,
+                        help="H/W tile size for --tiled (default 256).")
+    parser.add_argument("--overlap-d", type=int, default=16,
+                        help="D-axis tile overlap for --tiled (default 16 slices).")
+    parser.add_argument("--overlap-hw", type=int, default=16,
+                        help="H/W tile overlap for --tiled (default 16 pixels).")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -69,7 +105,8 @@ def main() -> int:
     if device.type == "cpu" and args.device != "cpu":
         print(f"[warn] {args.device} unavailable, falling back to CPU", flush=True)
 
-    model = UNet2D(**config["model"]).to(device)
+    arch = args.arch or str(config.get("model", {}).get("arch", "unet2d"))
+    model = build_model(arch, config["model"]).to(device)
     load_checkpoint(args.checkpoint, model, map_location=device)
     model.eval()
 
@@ -88,21 +125,22 @@ def main() -> int:
         case_dir.mkdir(parents=True, exist_ok=True)
 
         # 1) copy source half volumes next to their denoised counterparts
-        for kind in ("even", "odd"):
-            relative = _resolve_output(record, kind)
-            if relative is None:
-                print(f"[skip-copy] {key} {kind}: no source path in outputs", flush=True)
-                continue
-            src = base / relative
-            if not src.exists():
-                print(f"[skip-copy] {key} {kind}: source missing {src}", flush=True)
-                continue
-            dst = case_dir / f"{kind}.raw"
-            if dst.exists():
-                print(f"[exists] {kind}.raw already there, skip copy", flush=True)
-                continue
-            shutil.copyfile(src, dst)  # streamed, does not load 0.55 GiB into RAM
-            print(f"[copied] {kind}.raw <- {relative}", flush=True)
+        if not args.full_only:
+            for kind in ("even", "odd"):
+                relative = _resolve_output(record, kind)
+                if relative is None:
+                    print(f"[skip-copy] {key} {kind}: no source path in outputs", flush=True)
+                    continue
+                src = base / relative
+                if not src.exists():
+                    print(f"[skip-copy] {key} {kind}: source missing {src}", flush=True)
+                    continue
+                dst = case_dir / f"{kind}.raw"
+                if dst.exists():
+                    print(f"[exists] {kind}.raw already there, skip copy", flush=True)
+                    continue
+                shutil.copyfile(src, dst)  # streamed, does not load 0.55 GiB into RAM
+                print(f"[copied] {kind}.raw <- {relative}", flush=True)
 
         # 2) denoise the full-view volume
         relative = _resolve_output(record, "full")
@@ -115,8 +153,21 @@ def main() -> int:
             continue
         shape = tuple(int(dim) for dim in record["shape"])
         full = np.memmap(full_path, dtype=np.dtype(record.get("dtype") or "<f4"), mode="r", shape=shape)
-        denoised = infer_volume(model, full, device, args.batch_size)
+        if arch == "unet3d":
+            voxel_depth = int(config["data"].get("voxel_depth", 16))
+            if args.tiled:
+                denoised = infer_volume_3d_tiled(
+                    model, full, voxel_depth, args.patch_hw,
+                    args.overlap_d, args.overlap_hw, device, args.batch_size,
+                )
+            else:
+                denoised = infer_volume_3d(model, full, voxel_depth, device, args.batch_size)
+        else:
+            denoised = infer_volume(model, full, device, args.batch_size)
         write_raw_volume(case_dir / "full_denoised.raw", denoised)
+        if args.no_metrics:
+            print(f"[done] {key} ({group}) full_denoised.raw written", flush=True)
+            continue
         metrics = evaluate_volume(denoised, np.asarray(full), data_range)
         entry = {
             "key": key,

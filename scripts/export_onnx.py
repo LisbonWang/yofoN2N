@@ -22,7 +22,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cbct_n2n.models import UNet2D  # noqa: E402
+from cbct_n2n.models import UNet2D, UNet2D_DS, UNet3D  # noqa: E402
 
 
 def load_model(checkpoint: str | Path) -> tuple[torch.nn.Module, dict]:
@@ -30,7 +30,11 @@ def load_model(checkpoint: str | Path) -> tuple[torch.nn.Module, dict]:
     model_cfg = ckpt.get("config", {}).get("model", {})
     if not model_cfg:
         raise ValueError(f"checkpoint {checkpoint} has no config['model']; cannot rebuild architecture")
-    model = UNet2D(**model_cfg)
+    arch = model_cfg.get("arch", "unet2d")
+    model_cls = {"unet2d": UNet2D, "unet2d_ds": UNet2D_DS, "unet3d": UNet3D}.get(arch)
+    if model_cls is None:
+        raise ValueError(f"unknown arch {arch!r}; expected unet2d, unet2d_ds or unet3d")
+    model = model_cls(**{k: v for k, v in model_cfg.items() if k != "arch"})
     state = ckpt["model"]
     # strip DataParallel / DDP prefixes if present
     if any(k.startswith("module.") for k in state):
@@ -40,14 +44,16 @@ def load_model(checkpoint: str | Path) -> tuple[torch.nn.Module, dict]:
     return model, ckpt
 
 
-def parse_size(text: str) -> tuple[int, int]:
+def parse_size(text: str) -> tuple[int, ...]:
     try:
-        h, w = (int(v) for v in text.lower().split("x"))
+        dims = tuple(int(v) for v in text.lower().split("x"))
     except (ValueError, AttributeError):
-        raise argparse.ArgumentTypeError(f"input size must be HxW, got {text!r}")
-    if h <= 0 or w <= 0:
+        raise argparse.ArgumentTypeError(f"input size must be HxW or DxHxW, got {text!r}")
+    if len(dims) not in (2, 3):
+        raise argparse.ArgumentTypeError(f"input size must be HxW (2D) or DxHxW (3D), got {text!r}")
+    if any(d <= 0 for d in dims):
         raise argparse.ArgumentTypeError(f"input size must be positive, got {text!r}")
-    return h, w
+    return dims
 
 
 def main() -> int:
@@ -71,15 +77,31 @@ def main() -> int:
 
     output = args.output or args.checkpoint.with_suffix(".onnx")
     print(f"[export] checkpoint : {args.checkpoint}", flush=True)
-    print(f"[export] model arch  : UNet2D from config['model']", flush=True)
 
     model, ckpt = load_model(args.checkpoint)
+    arch = ckpt.get("config", {}).get("model", {}).get("arch", "unet2d")
+    print(f"[export] model arch  : {arch} from config['model']", flush=True)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[export] parameters : {n_params:,}  (epoch {ckpt.get('epoch')}, "
           f"val_loss {ckpt.get('metrics', {}).get('val_loss', 'n/a')})", flush=True)
 
-    h, w = args.input_size
-    dummy = torch.randn(1, 1, h, w)
+    if arch == "unet3d":
+        if len(args.input_size) != 3:
+            parser.error(f"--input-size for unet3d must be DxHxW, got {'x'.join(map(str, args.input_size))}")
+        d, h, w = args.input_size
+        input_shape = (1, 1, d, h, w)
+        dynamic_axes = {"input": {0: "batch", 2: "depth", 3: "height", 4: "width"},
+                        "output": {0: "batch", 2: "depth", 3: "height", 4: "width"}}
+        size_label = f"{d}x{h}x{w}"
+    else:
+        if len(args.input_size) != 2:
+            parser.error(f"--input-size for {arch} must be HxW, got {'x'.join(map(str, args.input_size))}")
+        h, w = args.input_size
+        input_shape = (1, 1, h, w)
+        dynamic_axes = {"input": {0: "batch", 2: "height", 3: "width"},
+                        "output": {0: "batch", 2: "height", 3: "width"}}
+        size_label = f"{h}x{w}"
+    dummy = torch.randn(*input_shape)
     try:
         # legacy exporter: most compatible path for GroupNorm + dynamic axes,
         # avoids the dynamo exporter's dependency on the optional onnxscript package
@@ -89,8 +111,7 @@ def main() -> int:
             str(output),
             input_names=["input"],
             output_names=["output"],
-            dynamic_axes={"input": {0: "batch", 2: "height", 3: "width"},
-                          "output": {0: "batch", 2: "height", 3: "width"}},
+            dynamic_axes=dynamic_axes,
             opset_version=args.opset,
             do_constant_folding=True,
             dynamo=False,
@@ -126,14 +147,14 @@ def main() -> int:
             print(f"[validate] SKIP (onnxruntime not installed: {exc})", flush=True)
             return 0
         sess = ort.InferenceSession(str(output), providers=["CPUExecutionProvider"])
-        x = np.random.default_rng(0).normal(size=(1, 1, h, w)).astype(np.float32)
+        x = np.random.default_rng(0).normal(size=input_shape).astype(np.float32)
         with torch.no_grad():
             expected = model(torch.from_numpy(x)).numpy()
         t0 = time.perf_counter()
         actual = sess.run(None, {"input": x})[0]
         elapsed = (time.perf_counter() - t0) * 1000
         diff = np.abs(actual - expected)
-        print(f"[validate] onnxruntime OK  (cpu {elapsed:.1f} ms for {h}x{w})", flush=True)
+        print(f"[validate] onnxruntime OK  (cpu {elapsed:.1f} ms for {size_label})", flush=True)
         print(f"[validate] max abs diff   : {diff.max():.3e}  (rel {float(diff.max()) / max(float(np.abs(expected).max()), 1e-12):.3e})", flush=True)
         ok = diff.max() < 1e-4 * max(float(np.abs(expected).max()), 1.0)
         print(f"[validate] {'PASS' if ok else 'FAIL'} (torch vs onnxruntime)", flush=True)

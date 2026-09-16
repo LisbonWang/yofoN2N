@@ -20,6 +20,7 @@ from cbct_n2n.reconstruction import (
     load_recon_groups,
     read_module_field,
     reconstruct_study,
+    validate_study_config,
     validated_per_view,
 )
 
@@ -480,3 +481,27 @@ def test_reconstruct_study_standard_filter_replaced_or_kept(tmp_path):
         assert _marfi_step(ws2 / subset / "config") == 2  # source step preserved
     # even/odd are already even so no step_fixes recorded
     assert record2["step_fixes"] == {}
+
+
+def test_validate_study_config_flags_blank_and_unparsable(tmp_path):
+    """Blank current.xml/filterPara.xml (incomplete copies) must be flagged: the engine
+    dies with an access violation on them; filter.xml's non-standard tags are ignored."""
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "current.xml").write_text('<?xml version="1.0"?><FDK_current_config><max>10</max></FDK_current_config>', encoding="utf-8")
+    (cfg / "filterPara.xml").write_text("<FDK_filter_config />", encoding="utf-8")
+    (cfg / "fdkPara.xml").write_text("<FDK_sys_para><noView>4</noView></FDK_sys_para>", encoding="utf-8")
+    (cfg / "filter.xml").write_text(_filter_xml("2"), encoding="utf-8")
+    assert validate_study_config(cfg) == []
+
+    # blank (space-only) current.xml + filterPara.xml, exactly like the corrupt PDL study
+    (cfg / "current.xml").write_text(" " * 239, encoding="utf-8")
+    (cfg / "filterPara.xml").write_text(" " * 60, encoding="utf-8")
+    problems = validate_study_config(cfg)
+    assert len(problems) == 2
+    assert any("current.xml" in p and "blank" in p for p in problems)
+    assert any("filterPara.xml" in p and "blank" in p for p in problems)
+
+    # missing file is reported too
+    (cfg / "current.xml").unlink()
+    assert any("current.xml: missing" in p for p in validate_study_config(cfg))

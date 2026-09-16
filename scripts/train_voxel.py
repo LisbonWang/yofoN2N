@@ -40,6 +40,7 @@ from torch.utils.data import DataLoader
 
 from cbct_n2n.config import load_config
 from cbct_n2n.data.n2n3d_dataset import N2N3DDataset
+from cbct_n2n.data.sampler import GroupedShuffleSampler
 from cbct_n2n.models.unet3d import UNet3D
 from cbct_n2n.models.unet import UNet2D
 from cbct_n2n.models.unet2d_ds import UNet2D_DS
@@ -99,16 +100,21 @@ def main() -> int:
     supervision_mode = str(data_cfg.get("supervision_mode", "full_view"))
     voxel_depth = int(data_cfg.get("voxel_depth", 16))
     stride = int(data_cfg.get("stride", 4))
+    patch_size = data_cfg.get("patch_size")
+    if patch_size is not None:
+        patch_size = int(patch_size)
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     common_kwargs = dict(
         mappings=mappings, residuals=residuals, supervision_mode=supervision_mode,
     )
     train_data = N2N3DDataset(manifest, args.manifest, "train", voxel_depth=voxel_depth,
-                              stride=stride, augment=bool(data_cfg.get("augment", True)),
+                              stride=stride, patch_size=patch_size,
+                              augment=bool(data_cfg.get("augment", True)),
                               **common_kwargs)
     val_data = N2N3DDataset(manifest, args.manifest, "val", voxel_depth=voxel_depth,
-                            stride=stride, augment=False, **common_kwargs)
+                            stride=stride, patch_size=patch_size, augment=False,
+                            **common_kwargs)
     num_workers = int(train_cfg.get("num_workers", 0))
     loader_args = {"batch_size": int(train_cfg["batch_size"]),
                    "num_workers": num_workers,
@@ -117,13 +123,17 @@ def main() -> int:
         loader_args["persistent_workers"] = True
         loader_args["prefetch_factor"] = int(train_cfg.get("prefetch_factor", 4))
         loader_args["worker_init_fn"] = _worker_init_fn
-    train_loader = DataLoader(train_data, shuffle=True, **loader_args)
+    # Two-level shuffle: shuffle studies first, then samples within each
+    # study, so consecutive batches stay inside one study (no raw-file
+    # jumping within a local window of time).
+    train_sampler = GroupedShuffleSampler(train_data.group_ids)
+    train_loader = DataLoader(train_data, sampler=train_sampler, **loader_args)
     val_loader = DataLoader(val_data, shuffle=False, **loader_args)
 
     model = build_model(arch, config["model"])
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[arch] {arch} | params={n_params:,} | voxel_depth={voxel_depth} | "
-          f"stride={stride} | data shape: source=5D target=5D", flush=True)
+          f"stride={stride} | patch_size={patch_size} | data shape: source=5D target=5D", flush=True)
     requested = str(train_cfg.get("device", "cuda"))
     device = torch.device(requested if requested != "cuda" or torch.cuda.is_available() else "cpu")
     model.to(device)

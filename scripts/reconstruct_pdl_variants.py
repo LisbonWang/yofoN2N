@@ -60,6 +60,7 @@ from cbct_n2n.reconstruction import (
     merge_index_records,
     output_names_for_mode,
     reconstruct_study,
+    validate_study_config,
     verify_volumes,
 )
 
@@ -118,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated subset of group names to reconstruct (default: all groups matching each study's mode)")
     parser.add_argument("--kv", type=float, default=None, help="Override tube kV for all studies")
     parser.add_argument("--ma", type=float, default=None, help="Override tube mA for all studies")
+    parser.add_argument("--pwls-scale", type=float, default=0.01,
+                        help="Data2-style per-study PWLS patch: beta = scale * mean(fieldMatrixMax.bin), "
+                             "PWLS forced on and Hamming window (0.54/0.46) enabled in every subset's filter.xml")
+    parser.add_argument("--no-pwls", action="store_true",
+                        help="Disable the PWLS+Hamming patch (data1-style: standard filter used verbatim)")
     parser.add_argument("--limit", type=int, default=None, help="Process at most this many studies (useful for smoke tests)")
     parser.add_argument("--overwrite", action="store_true", help="Reconstruct studies even if all outputs already exist")
     parser.add_argument("--continue-on-error", action="store_true", help="Keep going after a failing study")
@@ -176,6 +182,27 @@ def main() -> int:
         for group in matched:
             work.append((study, group))
 
+    # Drop studies whose config is an incomplete copy: the engine dies with an opaque
+    # access violation on blank current.xml / filterPara.xml instead of failing cleanly.
+    checked: dict[str, list[str]] = {}
+    usable: list[tuple[Any, Any]] = []
+    for study, group in work:
+        key = str(study.cfg_dir)
+        if key not in checked:
+            checked[key] = validate_study_config(study.cfg_dir)
+        if checked[key]:
+            continue
+        usable.append((study, group))
+    for study, _group in work:
+        problems = checked[str(study.cfg_dir)]
+        if problems and not any(s.get("study_uid") == study.study_uid for s in skipped):
+            skipped.append({"case_id": study.case_id, "study_uid": study.study_uid,
+                            "mode": study.mode, "cfg_dir": str(study.cfg_dir),
+                            "reason": "corrupt config: " + "; ".join(problems)})
+            print(f"{study.case_id}/{study.study_uid} [{study.mode}]: SKIPPED corrupt config "
+                  f"({'; '.join(problems)})", flush=True)
+    work = usable
+
     print(f"Discovered {len(studies)} study(ies) -> {len(work)} (study, group) item(s), "
           f"skipped {len(skipped)} without usable config/kV-mA or matching group", flush=True)
     top_dir = Path(args.source_root).name or "SOURCE"
@@ -210,6 +237,7 @@ def main() -> int:
         keep_workspace=args.keep_workspace,
         workspace_root=args.workspace_root,
         top_dir=top_dir,
+        pwls_scale=None if args.no_pwls else args.pwls_scale,
     )
 
     records, failures = [], 0
@@ -259,6 +287,7 @@ def main() -> int:
         "output_root": str(output_root),
         "groups_config": str(args.groups_config),
         "combos": [{"tag": tag, "post_procs": chain} for tag, chain in combos],
+        "pwls": {"enabled": not args.no_pwls, "scale": None if args.no_pwls else args.pwls_scale},
         "records": merged_records,
         "skipped": skipped,
     }

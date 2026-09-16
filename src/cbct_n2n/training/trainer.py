@@ -10,7 +10,6 @@ import torch
 import torch.nn.functional as F
 
 from .checkpoint import save_checkpoint
-from .metrics import compute_metrics
 
 
 def seed_everything(seed: int) -> None:
@@ -91,36 +90,6 @@ def validate(model, loader, device: torch.device) -> float:
     return total / count
 
 
-@torch.no_grad()
-def compute_val_metrics(model, loader, device: torch.device, data_range: float = 1.0) -> dict[str, float]:
-    """Per-slice image metrics (mae/rmse/psnr/ssim) averaged over the loader.
-
-    Returns an empty dict when the loader is empty or the data is not
-    image-like, so callers can record metrics opportunistically.
-    """
-    model.eval()
-    totals = {"mae": 0.0, "rmse": 0.0, "psnr": 0.0, "ssim": 0.0}
-    count = 0
-    for batch in loader:
-        source, target = (item.to(device, non_blocking=True) for item in _source_target(batch))
-        prediction = model(source)
-        pred_np = prediction.detach().float().cpu().numpy()[:, 0]
-        target_np = target.detach().float().cpu().numpy()[:, 0]
-        if pred_np.ndim == 4:  # 3D output [B, D, H, W]: fold D into the batch axis
-            pred_np = pred_np.reshape(-1, pred_np.shape[-2], pred_np.shape[-1])
-            target_np = target_np.reshape(-1, target_np.shape[-2], target_np.shape[-1])
-        if pred_np.ndim != 3 or pred_np.shape[0] == 0:
-            continue
-        metrics = compute_metrics(pred_np, target_np, data_range)
-        n = pred_np.shape[0]
-        for key in totals:
-            totals[key] += metrics[key] * n
-        count += n
-    if not count:
-        return {}
-    return {key: value / count for key, value in totals.items()}
-
-
 def fit(model, train_loader, val_loader, optimizer, scheduler, device: torch.device, run_dir: str | Path, config: dict[str, Any], *, start_epoch: int = 0) -> dict[str, float]:
     options = config["training"]
     destination = Path(run_dir)
@@ -140,11 +109,6 @@ def fit(model, train_loader, val_loader, optimizer, scheduler, device: torch.dev
         if scheduler is not None:
             scheduler.step(val_loss)
         metrics = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, "learning_rate": optimizer.param_groups[0]["lr"]}
-        if options.get("history_metrics"):
-            data_range = float(config.get("data", {}).get("metric_data_range", options.get("metric_data_range", 1.0)))
-            image_metrics = compute_val_metrics(model, val_loader, device, data_range)
-            if image_metrics:
-                metrics.update(image_metrics)
         with history_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(metrics) + "\n")
         save_checkpoint(destination / "last.pt", model, optimizer, scheduler, epoch, metrics, config)

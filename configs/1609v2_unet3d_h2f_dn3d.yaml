@@ -1,0 +1,35 @@
+reconstruction:
+  source_root: /data/raid0/yyc/AIReduceNoise2
+  output_root: /data/raid0/yyc/AIReduceNoise2/PDL
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+data:
+  manifest: /data/raid0/yyc/AIReduceNoise2/splits_1609v2.json
+  metric_data_range: 4.0
+  seed: 42
+  augment: true
+  mappings:
+  - even->full.dn3d
+  - odd->full.dn3d
+  voxel_depth: 16
+  stride: 16
+model:
+  arch: unet3d
+  in_channels: 1
+  out_channels: 1
+  base_channels: 16
+  depth: 4
+  residual: true
+training:
+  epochs: 100
+  batch_size: 2
+  learning_rate: 0.0001
+  weight_decay: 1.0e-05
+  num_workers: 8
+  amp: true
+  gradient_clip: 1.0
+  patience: 15
+  device: cuda:1
+  run_dir: runs/1609v2_n2n_3d_h2f_v2_dn3d
+  plot_interval: 5

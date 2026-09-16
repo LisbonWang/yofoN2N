@@ -20,5 +20,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if missing:
         raise ValueError(f"Missing configuration sections: {', '.join(sorted(missing))}")
     if "patch_size" in config["data"]:
-        raise ValueError("2D patch sampling is not supported; remove patch_size")
+        arch = str(config.get("model", {}).get("arch", ""))
+        if arch != "unet3d":
+            raise ValueError("patch_size (H/W patch sampling) is only supported for "
+                             "3D models (model.arch: unet3d); remove patch_size")
     return config

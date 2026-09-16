@@ -33,9 +33,13 @@ import torch
 import train_voxel  # noqa: E402  (reuse build_model)
 
 from cbct_n2n.config import load_config
-from cbct_n2n.data.dataset import pad_to_multiple, unpad
 from cbct_n2n.training.checkpoint import load_checkpoint
-from cbct_n2n.training.inference import evaluate_volume, resolve_input_kinds, write_raw_volume
+from cbct_n2n.training.inference import (
+    evaluate_volume,
+    infer_volume_3d,
+    resolve_input_kinds,
+    write_raw_volume,
+)
 
 
 def _resolve_output(record: dict[str, Any], logical: str) -> str | None:
@@ -78,64 +82,6 @@ def _aggregate(rows: list[dict[str, float]], keys: tuple[str, ...]) -> dict[str,
     return aggregated
 
 
-@torch.no_grad()
-def infer_volume_3d(model, volume: np.ndarray, voxel_depth: int,
-                    device: torch.device, batch_size: int = 2) -> np.ndarray:
-    """Whole-volume 3D inference via a non-overlapping D-slice sliding window.
-
-    The model maps a ``[1, D, H, W]`` slab to a same-D-length denoised slab.
-    The volume is split into consecutive ``voxel_depth``-slice windows strided
-    by ``voxel_depth`` (matching the non-overlapping training-time placement).
-    The final window is zero-padded to a full ``voxel_depth`` when ``n %
-    voxel_depth != 0``; its extra (padded) output slices are discarded so the
-    returned volume has exactly ``n`` slices -- the same as the input.
-    """
-    source = np.asarray(volume)
-    if source.ndim != 3:
-        raise ValueError("volume must have shape (z, y, x)")
-    if voxel_depth < 1:
-        raise ValueError("voxel_depth must be positive")
-
-    n = int(source.shape[0])
-    model.eval()
-
-    # Pad H/W once; the padding is identical for every slice (H/W uniform).
-    padded_slices: list[np.ndarray] = []
-    padding = None
-    for i in range(n):
-        padded, pad = pad_to_multiple(source[i].astype(np.float32))
-        padded_slices.append(padded)
-        if padding is None:
-            padding = pad
-    padded = np.stack(padded_slices, axis=0)  # [n, Hp, Wp]
-    Hp, Wp = padded.shape[-2], padded.shape[-1]
-
-    # Non-overlapping windows strided by voxel_depth; the final window is
-    # zero-padded to a full voxel_depth (its extra output slices are dropped).
-    z_starts: list[int] = list(range(0, n, voxel_depth))
-    windows: list[np.ndarray] = []
-    for z_start in z_starts:
-        win = np.zeros((voxel_depth, Hp, Wp), dtype=np.float32)
-        z_end = min(z_start + voxel_depth, n)
-        win[:z_end - z_start] = padded[z_start:z_end]
-        windows.append(win)
-
-    preds: list[np.ndarray] = []
-    for start in range(0, len(windows), batch_size):
-        batch = torch.from_numpy(np.stack(windows[start:start + batch_size])).unsqueeze(1).to(device)
-        pred = model(batch).detach().float().cpu().numpy()[:, 0]  # [B, D, Hp, Wp]
-        preds.append(pred)
-    all_pred = np.concatenate(preds, axis=0)  # [num_windows, D, Hp, Wp]
-
-    out = np.zeros_like(padded)  # [n, Hp, Wp]
-    for k, z_start in enumerate(z_starts):
-        z_end = min(z_start + voxel_depth, n)
-        out[z_start:z_end] = all_pred[k][:z_end - z_start]
-
-    restored = [unpad(slice_, padding) for slice_ in out]
-    return np.stack(restored).astype(np.float32)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate a trained 3D UNet on RAW volumes from a study-level manifest."
@@ -144,7 +90,7 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
-    parser.add_argument("--input-kind", choices=["even", "odd", "both"], default="both")
+    parser.add_argument("--input-kind", choices=["even", "odd", "both", "full"], default="full")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/eval_raw_3d"))
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--device", default="cuda:0")

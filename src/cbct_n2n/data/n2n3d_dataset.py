@@ -55,11 +55,20 @@ class N2N3DDataset(N2NDataset):
         ``stride < voxel_depth``; ``stride == voxel_depth`` reproduces the
         non-overlapping tiling.  Every window end ``start + voxel_depth`` is
         kept ``<= record_depth`` so no slice is ever out of range.
+    patch_size:
+        Optional square H/W crop size (default ``None`` = use the full slice
+        plane).  When set, each slab's H/W is cropped to ``patch_size x
+        patch_size``: randomly positioned during training (``augment=True``)
+        and centre-cropped otherwise.  This enables patch-based training on
+        large slices (e.g. 256x256 from a 640x640 axial plane) while keeping
+        the native voxel resolution.  ``patch_size`` must be ``>= 2 ** depth``
+        (the fixed 2x pooling) so the model can downsample along H and W.
     All other keyword arguments are forwarded to :class:`N2NDataset`.
     """
 
     def __init__(self, *args: Any, voxel_depth: int = 16,
-                 stride: int = 4, **kwargs: Any) -> None:
+                 stride: int = 4, patch_size: int | None = None,
+                 **kwargs: Any) -> None:
         if voxel_depth < 1:
             raise ValueError("voxel_depth must be positive")
         if stride < 1:
@@ -67,10 +76,14 @@ class N2N3DDataset(N2NDataset):
         super().__init__(*args, **kwargs)
         self.voxel_depth = int(voxel_depth)
         self.stride = int(stride)
+        self.patch_size = int(patch_size) if patch_size is not None else None
         # Windows are keyed by their *start* slice index.  ``start`` runs
         # from 0 with stride ``self.stride``, and every window end
         # ``start + voxel_depth <= count`` (no out-of-range slice).
         self.slices = self._build_start_slices()
+        # Group id per sample == its volume index, so a grouped sampler can
+        # shuffle studies first and samples within each study second.
+        self.group_ids: list[int] = [s[0] for s in self.slices]
 
     # ---- helpers ----------------------------------------------------------
 
@@ -134,6 +147,28 @@ class N2N3DDataset(N2NDataset):
             target_buf[i] = tgt
         return source_buf, target_buf
 
+    def _crop_patch(self, source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Crop a square ``patch_size`` H/W region from both slabs.
+
+        Training (``augment=True``) samples a random offset; evaluation uses a
+        centre crop so validation is deterministic.  When the slice plane is
+        already ``<= patch_size`` the slabs are returned unchanged.
+        """
+        if self.patch_size is None:
+            return source, target
+        H = int(source.shape[1])
+        W = int(source.shape[2])
+        ps = self.patch_size
+        if H <= ps and W <= ps:
+            return source, target
+        if self.augment:
+            h0 = int(np.random.randint(0, H - ps + 1)) if H > ps else 0
+            w0 = int(np.random.randint(0, W - ps + 1)) if W > ps else 0
+        else:
+            h0 = (H - ps) // 2 if H > ps else 0
+            w0 = (W - ps) // 2 if W > ps else 0
+        return source[:, h0:h0 + ps, w0:w0 + ps], target[:, h0:h0 + ps, w0:w0 + ps]
+
     # ---- Dataset API ------------------------------------------------------
 
     def __getitem__(self, index: int) -> dict[str, Any]:  # type: ignore[override]
@@ -146,6 +181,9 @@ class N2N3DDataset(N2NDataset):
         source_slab, target_slab = self._gather_slab(
             memmaps, int(start), source_kind, target_kind, tag, self.voxel_depth,
         )
+
+        # Crop the H/W plane to the configured patch size (no-op when unset).
+        source_slab, target_slab = self._crop_patch(source_slab, target_slab)
 
         # Pad each slice's H/W to a multiple of 32 (UNet's pool divisor).
         # 640x640 is already aligned; skip the per-slice pad + re-stack when

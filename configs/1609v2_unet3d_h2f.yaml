@@ -4,7 +4,7 @@
 #       训练窗口按 start 枚举、stride=4 滑动取样（窗口重叠 12 层），end=start+16 不越界。
 # 模型：UNet3D base16/depth4（固定 2x 池化，输出 D = 输入 D = voxel_depth）
 # 注意：全 360 层训练（每 study 全部切片都参与）。
-# 运行（服务器 192.168.36.102，卡 3）：
+# 运行（服务器 192.168.36.102，卡 1）：
 #   /opt/anaconda3/envs/pytorch201/bin/python scripts/train_voxel.py \
 #     --config configs/1609v2_unet3d_h2f.yaml \
 #     --manifest /data/raid0/yyc/AIReduceNoise2/splits_1609v2.json \
@@ -47,7 +47,6 @@ training:
   amp: true
   gradient_clip: 1.0
   patience: 15
-  device: cuda:3
-  run_dir: runs/1609v2_n2n_3d_h2f
-  history_metrics: true
+  device: cuda:1
+  run_dir: runs/1609v2_n2n_3d_h2f_v2
   plot_interval: 5

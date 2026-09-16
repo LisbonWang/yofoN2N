@@ -168,6 +168,11 @@ class VariantOptions:
     #: top-level output directory name (e.g. ``PDL``, taken from the source root name by the CLI).
     #: ``None`` keeps the legacy flat layout without a top-level source directory.
     top_dir: str | None = None
+    #: Data2-style per-study PWLS patch: ``beta = pwls_scale * mean(fieldMatrixMax.bin)``
+    #: with PWLS forced on and the Hamming window (0.54/0.46) enabled in every subset's
+    #: filter.xml copy (after the group's standard filter replacement).  ``None`` disables
+    #: the patch (standard filter used verbatim = data1-style no-PWLS reconstruction).
+    pwls_scale: float | None = None
 
 
 @dataclass(frozen=True)
@@ -505,6 +510,104 @@ def _patch_filter_xml(
     return patched
 
 
+def validate_study_config(cfg_dir: str | Path) -> list[str]:
+    """Return problems that would make the XDay engine crash on this config.
+
+    The engine crashes with an opaque ``access violation`` when ``current.xml`` or
+    ``filterPara.xml`` are blank (incomplete copies) instead of a proper XML document, so
+    such studies must be filtered out *before* reconstruction.  ``filter.xml`` is
+    deliberately not checked: real files use non-standard tags (``<SecondaryBP::BHC>``)
+    that no XML parser accepts.
+    """
+    problems: list[str] = []
+    for name in ("current.xml", "filterPara.xml", "fdkPara.xml"):
+        f = Path(cfg_dir) / name
+        if not f.is_file():
+            problems.append(f"{name}: missing")
+            continue
+        data = f.read_bytes()
+        if not data.strip():
+            problems.append(f"{name}: blank ({len(data)} bytes, incomplete copy)")
+            continue
+        try:
+            ET.fromstring(data.decode("utf-8", errors="replace"))
+        except ET.ParseError as exc:
+            problems.append(f"{name}: unparsable ({exc})")
+    return problems
+
+
+def brightness_mean(cfg_dir: str | Path) -> float:
+    """Mean of the study config's fieldMatrixMax brightness bins (the data2 PWLS beta source).
+
+    Accepts both layouts: a single ``fieldMatrixMax.bin`` (data2-style) or per-panel
+    ``fieldMatrixMaxA.bin`` / ``fieldMatrixMaxB.bin`` (PDL dual-panel detectors).  The mean
+    is taken over the concatenated values of all matches, which reduces to the plain
+    single-file mean when only one file exists.
+    """
+    files = sorted(Path(cfg_dir).glob("fieldMatrixMax*.bin"))
+    if not files:
+        raise FileNotFoundError(f"no fieldMatrixMax*.bin in {cfg_dir}")
+    total = 0.0
+    count = 0
+    for f in files:
+        values = np.fromfile(f, dtype="<f4")
+        total += float(values.sum(dtype=np.float64))
+        count += values.size
+    return total / count
+
+
+def patch_pwls_hamming(cfg_dir: str | Path, beta: float) -> list[str]:
+    """Force PWLS on with *beta* and enable the Hamming window (0.54/0.46).
+
+    Edits the workspace config copy's ``filter.xml`` in place (atomic write).  This is the
+    data2-style per-study patch ported from ``reconstruct_aired2_pwls.py``: the PWLS
+    ``iterCount``/``delta`` values already present in the filter file are kept, only
+    ``isEnable`` and ``beta`` are touched.  Returns human-readable change notes.
+    """
+    changes: list[str] = []
+
+    def patch(text: str) -> str:
+        out = text
+
+        def _block(tag: str, src: str) -> tuple[int, int] | None:
+            m = re.search(rf"<{tag}>(.*?)</{tag}>", src, re.S)
+            return (m.start(1), m.end(1)) if m else None
+
+        # ---- <Pwls>: isEnable=1 + beta ----
+        span = _block("Pwls", out)
+        if span is None:
+            raise ValueError(f"{cfg_dir}: filter.xml has no <Pwls> section")
+        block = out[span[0]:span[1]]
+        if re.search(r"<isEnable>\s*0\s*</isEnable>", block):
+            block = re.sub(r"<isEnable>\s*0\s*</isEnable>", "<isEnable>1</isEnable>", block, count=1)
+            changes.append("pwls.isEnable 0->1")
+        elif not re.search(r"<isEnable>", block):
+            lead = re.search(r"^(\s*)", block).group(1)
+            block = "<isEnable>1</isEnable>\n" + lead + block.lstrip("\r\n\t ")
+            changes.append("pwls.isEnable inserted=1")
+        if re.search(r"<beta>", block):
+            block = re.sub(r"(<beta>)[^<]*(</beta>)", rf"\g<1>{beta:g}\g<2>", block, count=1)
+            changes.append(f"pwls.beta={beta:g}")
+        out = out[:span[0]] + block + out[span[1]:]
+
+        # ---- <Ramp>: isHamEnable=1, Hamming coefficients 0.54/0.46 ----
+        span = _block("Ramp", out)
+        if span is None:
+            raise ValueError(f"{cfg_dir}: filter.xml has no <Ramp> section")
+        block = out[span[0]:span[1]]
+        if re.search(r"<isHamEnable>\s*0\s*</isHamEnable>", block):
+            block = re.sub(r"<isHamEnable>\s*0\s*</isHamEnable>", "<isHamEnable>1</isHamEnable>", block, count=1)
+            changes.append("ramp.isHamEnable 0->1")
+        for tag, value in (("paraHam1", "0.54"), ("paraHam2", "0.46")):
+            if re.search(rf"<{tag}>", block):
+                block = re.sub(rf"(<{tag}>)[^<]*(</{tag}>)", rf"\g<1>{value}\g<2>", block, count=1)
+                changes.append(f"ramp.{tag}={value}")
+        return out[:span[0]] + block + out[span[1]:]
+
+    _patch_filter_xml(cfg_dir, patch)
+    return changes
+
+
 def fix_subsample_step(cfg_dir: str | Path, modules: Iterable[str] = DEFAULT_STEP_MODULES) -> list[tuple[str, int, int]]:
     """Round odd ``step > 1`` up to even for the given modules in filter.xml.
 
@@ -628,23 +731,33 @@ def reconstruct_study(
     rel_prefix = "/".join(prefix_parts)
     expected = output_names_for_mode(study.mode, options.combos, options.split_modes)
     if not options.overwrite and all((case_out / name).is_file() for name in expected) and (case_out / "metadata.json").is_file():
-        record = _base_record(study, options, group)
-        # Inherit shape/dtype/outputs from the previous run's metadata.json so that
-        # verify_volumes can re-check the existing volumes (size check) instead of
-        # flagging them as "record missing shape/outputs" on every resumable run.
         try:
             import json
             prev = json.loads((case_out / "metadata.json").read_text(encoding="utf-8"))
+        except Exception:
+            prev = None
+        # A previous output produced under *different* PWLS settings is not complete for
+        # this run: fall through to a full reconstruction instead of skipping it.
+        prev_pwls = (prev or {}).get("pwls")
+        if options.pwls_scale is None:
+            if prev_pwls:
+                prev = None
+        elif not (isinstance(prev_pwls, dict) and prev_pwls.get("enabled")
+                  and abs(float(prev_pwls.get("scale", -1.0)) - options.pwls_scale) < 1e-12):
+            prev = None
+        if prev is not None:
+            record = _base_record(study, options, group)
+            # Inherit shape/dtype/outputs from the previous run's metadata.json so that
+            # verify_volumes can re-check the existing volumes (size check) instead of
+            # flagging them as "record missing shape/outputs" on every resumable run.
             for key in ("shape", "dtype", "spacing_zyx", "outputs", "per_view_sliced",
                         "per_view_warnings", "step_fixes", "fdk_changed", "fdk_para",
-                        "filter_file", "filter_replaced"):
+                        "filter_file", "filter_replaced", "pwls"):
                 if key in prev:
                     record[key] = prev[key]
-        except Exception:
-            pass
-        record.setdefault("outputs", {name: f"{rel_prefix}/{name}" for name in expected})
-        record.update({"status": "success", "skipped": True})
-        return record
+            record.setdefault("outputs", {name: f"{rel_prefix}/{name}" for name in expected})
+            record.update({"status": "success", "skipped": True})
+            return record
     if not study.nviews:
         raise ValueError("study has no projections")
     if study.kv is None or study.ma is None:
@@ -686,6 +799,14 @@ def reconstruct_study(
                 fixes = fix_subsample_step(_cfg, options.step_modules)
                 if fixes:
                     step_fixes[subset] = fixes
+
+        pwls_info = None
+        if options.pwls_scale is not None:
+            beta = options.pwls_scale * brightness_mean(study.cfg_dir)
+            for _raw, _cfg in workspaces.values():
+                patch_pwls_hamming(_cfg, beta)
+            pwls_info = {"enabled": True, "scale": options.pwls_scale, "beta": beta,
+                         "brightness_mean": beta / options.pwls_scale}
 
         common = dict(xday_install_dir=options.xday_dir, dtype=options.dtype, show_progress=False, sdk=sdk)
         combos_by_tag = dict(options.combos)
@@ -729,6 +850,7 @@ def reconstruct_study(
             "fdk_changed": fdk_changed,
             "filter_file": group.filter_file,
             "filter_replaced": filter_replaced,
+            "pwls": pwls_info,
             "step_fixes": step_fixes,
             "per_view_sliced": dict(per_view),
             "per_view_warnings": per_view_warnings,

@@ -173,6 +173,34 @@ def test_plain_outputs_keys_legacy_style(tmp_path):
     np.testing.assert_allclose(item["target"].numpy()[0, :3, :5], volumes["full"][0])
 
 
+@pytest.mark.parametrize("suffix", ["dn", "dn1", "dn2"])
+def test_full_variant_target_resolves_recursive_suffix(tmp_path, suffix):
+    """A ``full.<suffix>`` (teacher-denoised) target resolves to its .raw file.
+
+    The recursive scheme supervises ``even/odd -> full.dn{k}``; the dataset's
+    target whitelist must accept any ``full.*`` variant and route it to the
+    ``full.<suffix>.raw`` file registered in outputs.
+    """
+    volumes = _base_volumes()
+    volumes[f"full.{suffix}"] = volumes["full"] - 0.25  # teacher-denoised target
+    _write_volumes(tmp_path, "case", volumes)
+    record = _record("s1", "case", volumes=volumes)
+    manifest_path = _write_manifest(tmp_path, [record], ["s1"])
+
+    dataset = N2NDataset(
+        {"records": [record], "splits": {"train": ["s1"], "val": [], "test": []}},
+        manifest_path,
+        "train",
+        mappings=[f"even->full.{suffix}"],
+    )
+
+    item = dataset[0]
+    assert item["target_kind"] == f"full.{suffix}"
+    assert item["mapping"] == f"even->full.{suffix}"
+    np.testing.assert_allclose(item["source"].numpy()[0, :3, :5], volumes["even"][0])
+    np.testing.assert_allclose(item["target"].numpy()[0, :3, :5], volumes[f"full.{suffix}"][0])
+
+
 def test_bhc_residual_appends_pair_and_shifts_source_and_target(tmp_path):
     volumes = _base_volumes()
     volumes["full.bhc"] = volumes["full"] + 0.5  # residual R = 0.5 everywhere

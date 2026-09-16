@@ -15,6 +15,7 @@ from .variants import (
     VariantOptions,
     apply_fdk_para,
     apply_filter_file,
+    brightness_mean,
     build_full_workspace,
     discover_studies,
     fix_subsample_step,
@@ -23,18 +24,20 @@ from .variants import (
     load_recon_groups,
     mode_fov_key,
     output_names_for_mode,
+    patch_pwls_hamming,
     read_module_field,
     reconstruct_study,
     subsets_for_mode,
+    validate_study_config,
     validated_per_view,
 )
 
 __all__ = [
     "DEFAULT_COMBOS", "DEFAULT_PER_VIEW_FILES", "DEFAULT_SPLIT_MODES", "DEFAULT_STEP_MODULES", "OUTPUT_NAMES", "PairRecord", "PrepareOptions",
     "SUBSETS", "ScanCase", "Study", "SubsetWorkspace", "VariantOptions", "ReconGroup", "apply_fdk_para",
-    "apply_filter_file", "build_full_workspace", "build_subset_workspace", "discover_cases", "discover_studies",
+    "apply_filter_file", "brightness_mean", "build_full_workspace", "build_subset_workspace", "discover_cases", "discover_studies",
     "fix_subsample_step", "fov_suffix_from_fdk", "groups_for_mode", "load_index", "load_recon_groups",
-    "merge_index_records", "mode_fov_key", "numbered_raw_files", "output_names_for_mode", "prepare_case",
+    "merge_index_records", "mode_fov_key", "numbered_raw_files", "output_names_for_mode", "patch_pwls_hamming", "prepare_case",
     "read_module_field", "reconstruct_study", "scan_reconstructable", "split_projection_indices",
-    "subsets_for_mode", "validated_per_view", "verify_volumes",
+    "subsets_for_mode", "validate_study_config", "validated_per_view", "verify_volumes",
 ]
