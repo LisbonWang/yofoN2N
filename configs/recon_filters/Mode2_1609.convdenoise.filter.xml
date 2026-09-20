@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mode2_1609 的传统（非 AI）降噪参数试验版。
+
+  configs/recon_filters/Mode2_1609.filter.xml 的逐行副本，只新增了本注释
+  与两处 TUNABLE 标注，参数值暂未改动。configs/recon_groups.json 不引用本文件，
+  因此改这里不会影响 AIReduceNoise3 批处理管线或任何已生成的体数据。
+
+  重建时由 scripts/recon_conventional_denoise.py 的 filter-file 选项指向本文件，
+  输出的 sidecar json 会记录本文件 md5 与 ReduceNoise / Anisotropic 参数快照。
+
+  注意：SDK 采取整文件替换、不做运行期参数覆盖，本文件必须保持完整。
+-->
+<FDK_filter_config>
+    <SysParaOverwriter>
+		<xNum>680</xNum>
+		<yNum>680</yNum>
+        <zNum>420</zNum>
+		<zTop>~-10</zTop>
+		<zBot>~+10</zBot>
+		<if-with>TruncationRecon</if-with>
+	</SysParaOverwriter>
+	<FieldsLoading/>
+	<GeometryLoading>
+		<loadingBinary>1</loadingBinary>
+	</GeometryLoading>
+	<DeadPixelFix/>
+	<NegtiveLog/>
+	<Pwls>
+		<isEnable>1</isEnable>
+		<iterCount>20</iterCount>
+		<delta>0.5</delta>
+		<beta>600.0</beta>
+	</Pwls>
+	<ImStraight/>
+	<Preview/>
+	<ImDump>
+		<isEnable>0</isEnable>
+		<outDirPath>D:\sino3</outDirPath>
+		<!-- <target>preview</target>
+		<target>brightField</target>
+		<target>image</target> -->
+	</ImDump>
+	<ConeAngleCompletion>
+		<isEnable>1</isEnable>
+		<extNumTop>100</extNumTop>
+		<extNumBot>100</extNumBot>
+	</ConeAngleCompletion>
+	<SinoBufferWriter/>
+
+	<WCE>
+		<isEnable>1</isEnable>
+		<uNumExtL>200</uNumExtL>
+		<uNumExtR>0</uNumExtR>
+	</WCE>
+	<Comp180/>
+	<WeightR/>
+	<Ramp>
+		<isEnable>1</isEnable>
+	    <isHamEnable>0</isHamEnable>
+		<paraHam1>0.54</paraHam1>
+		<paraHam2>0.46</paraHam2>
+		<inputSize>4096</inputSize>
+		<outputSize>2048</outputSize>
+	</Ramp>
+	<BP/>
+	<!--Post Processes-->
+	<Pose>
+		<alwaysEnable>1</alwaysEnable>
+	</Pose>
+	<MetalBackup>
+		<alwaysEnable>1</alwaysEnable>
+		<metalThres>1.0</metalThres>
+	</MetalBackup>
+	<SecondaryBP::BHC>
+		<BHC>
+			<boneThresLow>0.3</boneThresLow>
+			<boneThresHigh>0.4</boneThresHigh>
+			<metalThresLow>0.9</metalThresLow>
+			<metalThresHigh>1.0</metalThresHigh>
+			<pwb>0.03</pwb>
+			<pbb>0.11</pbb>
+			<pwmm>0.10</pwmm>
+			<pbm>0.45</pbm>
+			<pb>-0.2</pb>
+			<pm>-0.45</pm>
+		</BHC>
+		<filters>SinoBufferReader BHC WCE Comp180 WeightR Ramp BP</filters>
+		<time>12</time>
+	</SecondaryBP::BHC>
+	<MARFI>
+		<metalThres>1.0</metalThres>
+		<metalNumThres>250</metalNumThres>
+		<maxMetalNumThres>100000</maxMetalNumThres>
+		<gaussMetalSigma>1</gaussMetalSigma>
+		<gaussMetalLen>3</gaussMetalLen>
+		<gradientWeightPara>0.7</gradientWeightPara>
+		<cgError>0.00003</cgError>
+		<cgMaxIterCount>2000</cgMaxIterCount>
+		<step>2</step>
+		<time>50</time>
+	</MARFI>
+	<SecondaryBP::RWeight>
+		<RWeight>
+			<uNumExt>200</uNumExt>
+			<medFilterEnable>1</medFilterEnable>
+			<overLapNum>10</overLapNum>
+			<medianLen>20</medianLen>
+		</RWeight>
+		<filters>SinoBufferReader RWeight WCE Comp180 WeightR Ramp BP</filters>
+	</SecondaryBP::RWeight>
+	<SinoBufferCleaner>
+		<alwaysEnable>1</alwaysEnable>
+	</SinoBufferCleaner>
+	<!-- ===== TUNABLE 1/2 : 传统降噪主滤波器 =====
+	     本文件是 Mode2_1609.filter.xml 的副本，专供传统降噪参数试验；
+	     configs/recon_groups.json 不引用它，改动不会影响批处理管线与已生成体数据。
+	     ratio          : 混合比例，1.0 表示全量应用
+	     gradientThresh : 梯度阈值（边缘保护相关，SDK 未给文档，语义为推断）
+	     medFilterLen   : 中值滤波窗长，单位 体素；7 体素 x 0.25mm = 1.75mm
+	     time           : 进度或耗时预算字段（BP 12 / BHC 12 / MARFI 50 同款），不是滤波强度
+	-->
+	<ReduceNoise>
+		<ratio>1.0</ratio>
+		<gradientThresh>0.01</gradientThresh>
+		<time>6</time>
+		<medFilterLen>7</medFilterLen>
+	</ReduceNoise>
+	<!-- ===== TUNABLE 2/2 : 各向异性扩散 =====
+	     stepNum  : 迭代步数
+	     filterLen: 滤波窗长，单位 体素；5 体素 x 0.25mm = 1.25mm
+	     sigma    : 平滑强度（空间 sigma，SDK 未给文档，语义为推断）
+	     weightZ  : z 方向权重，越小越抑制层间平滑；0.0015 约为面内权重的 1/667
+	     time     : 进度或耗时预算字段，不是滤波强度
+	-->
+	<Anisotropic>
+		<stepNum>1</stepNum>
+		<filterLen>5</filterLen>
+		<sigma>3.0</sigma>
+		<weightZ>0.0015</weightZ>
+		<time>1</time>
+	</Anisotropic>
+	<RCoor>
+		<isNorEnable>1</isNorEnable>
+		<isRingEnable>0</isRingEnable>
+		<time>5</time>
+	</RCoor>
+	<MetalRestore>
+		<alwaysEnable>1</alwaysEnable>
+	</MetalRestore>
+	<WaterCali>
+		<alwaysEnable>1</alwaysEnable>
+	</WaterCali>
+	<CalcCephAngle>
+		<alwaysEnable>1</alwaysEnable>
+	</CalcCephAngle>
+    <DigitalPano>
+        <alpha>0.6</alpha>
+        <beta>-0.06</beta>
+    </DigitalPano>
+</FDK_filter_config>
