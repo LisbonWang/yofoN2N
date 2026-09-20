@@ -1,4 +1,10 @@
-from .subset import SubsetWorkspace, build_subset_workspace, numbered_raw_files, split_projection_indices
+from .subset import (
+    SubsetWorkspace,
+    build_subset_workspace,
+    numbered_raw_files,
+    split_projection_indices,
+    split_projection_indices_blockwise,
+)
 from .discovery import ScanCase, discover_cases
 from .prepare import PairRecord, PrepareOptions, prepare_case
 from .indexing import scan_reconstructable
@@ -39,5 +45,5 @@ __all__ = [
     "fix_subsample_step", "fov_suffix_from_fdk", "groups_for_mode", "load_index", "load_recon_groups",
     "merge_index_records", "mode_fov_key", "numbered_raw_files", "output_names_for_mode", "patch_pwls_hamming", "prepare_case",
     "read_module_field", "reconstruct_study", "scan_reconstructable", "split_projection_indices",
-    "subsets_for_mode", "validate_study_config", "validated_per_view", "verify_volumes",
+    "split_projection_indices_blockwise", "subsets_for_mode", "validate_study_config", "validated_per_view", "verify_volumes",
 ]

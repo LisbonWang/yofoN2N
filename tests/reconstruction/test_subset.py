@@ -7,6 +7,7 @@ from cbct_n2n.reconstruction.subset import (
     build_subset_workspace,
     numbered_raw_files,
     split_projection_indices,
+    split_projection_indices_blockwise,
 )
 
 
@@ -29,6 +30,17 @@ def test_numbered_files_sort_numerically_and_split_positions(tmp_path):
     assert [p.name for p in numbered_raw_files(raw)] == ["00000.raw", "00001.raw", "00002.raw", "00003.raw", "00004.raw"]
     assert split_projection_indices(5) == ([0, 2, 4], [1, 3])
     assert split_projection_indices(4) == ([0, 2], [1, 3])
+
+
+def test_blockwise_split_takes_two_then_skips_two():
+    assert split_projection_indices_blockwise(8, block_size=2) == (
+        [0, 1, 4, 5],
+        [2, 3, 6, 7],
+    )
+    assert split_projection_indices_blockwise(10, block_size=2) == (
+        [0, 1, 4, 5, 8, 9],
+        [2, 3, 6, 7],
+    )
 
 
 def test_subset_copies_projection_and_per_view_geometry(tmp_path):

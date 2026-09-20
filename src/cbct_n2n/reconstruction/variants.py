@@ -55,19 +55,21 @@ from typing import Any, Callable, Iterable
 import numpy as np
 
 from .prepare import _parse_kv_ma
-from .subset import build_subset_workspace, numbered_raw_files, split_projection_indices
+from .subset import (
+    build_subset_workspace,
+    numbered_raw_files,
+    split_projection_indices,
+    split_projection_indices_blockwise,
+)
 
 #: subset name -> display name used in output file names
 SUBSETS = ("full", "even", "odd")
 
-#: modes whose scans get even/odd projection splitting.  Mode2/Mode3 data is
-#: self-consistent (raw views == fdkPara noView == projectionMatrix rows) so the
-#: downsampled subsets reconstruct correctly.  Mode1 is an odd/even dual-geometry
-#: scan (fdkPara carries SIDOdd/SIDEven, zSrcOffsetOdd/zSrcOffsetEven, ... and the
-#: projection matrix alternates odd/even rows) whose raw view count (1046) does not
-#: match noView/matrix rows (1020); splitting it produces misaligned volumes, so
-#: Mode0/Mode1 are reconstructed from the full set only.
-DEFAULT_SPLIT_MODES: tuple[str, ...] = ("Mode2", "Mode3")
+#: modes whose scans get complementary half-view reconstruction.  Mode2/Mode3 use
+#: scalar parity (0,2,4... vs 1,3,5...).  Mode1 is a dual-source scan whose valid
+#: prefix is declared by fdkPara noView (1020 of 1046 files) and whose sources
+#: alternate in two-frame blocks: 0,1 / 2,3 / 4,5 / 6,7 ... .
+DEFAULT_SPLIT_MODES: tuple[str, ...] = ("Mode1", "Mode2", "Mode3")
 
 #: default post-processing combos: tag -> xday --post-procs chain
 DEFAULT_COMBOS: tuple[tuple[str, str], ...] = (
@@ -119,12 +121,12 @@ def output_names_for_mode(mode: str, combos: Iterable[tuple[str, str]], split_mo
 #: modules whose ``step`` must be even after projection downsampling (even/odd subsets)
 DEFAULT_STEP_MODULES = ("MARFI", "BHC")
 
-#: per-view binary files sliced per projection index, keyed by scan mode.  Mode1 stores
-#: projectionMatrix.bin as a shared/whole file (size != 1046 x 84), so it is copied intact.
-#: Modes not listed here (e.g. a future Mode0) get no per-view slicing and copy such files
-#: whole as well — the safe fallback for unknown layouts.
+#: per-view binary files sliced per projection index, keyed by scan mode.  Validation
+#: uses the effective fdkPara noView rather than the raw directory count, which matters
+#: for Mode1 (1046 files, first 1020 valid matrix rows).  Modes not listed (Mode0) copy
+#: ancillary binaries whole.
 DEFAULT_PER_VIEW_FILES: dict[str, dict[str, int]] = {
-    "Mode1": {},
+    "Mode1": {"projectionMatrix.bin": 21 * 4},
     "Mode2": {"projectionMatrix.bin": 21 * 4},
     "Mode3": {"projectionMatrix.bin": 21 * 4},
 }
@@ -765,13 +767,14 @@ def reconstruct_study(
 
     case_out.mkdir(parents=True, exist_ok=True)
     split_subsets = any(m.casefold() == study.mode.casefold() for m in options.split_modes)
+    # The SDK consumes only the prefix declared by fdkPara noView.  Mode1 has 1046 files
+    # but exactly 1020 valid image/matrix rows; all full and subset workspaces must use
+    # that same effective count.
+    declared_no_view = _read_no_view(study.cfg_dir / "fdkPara.xml")
+    source_no_view = min(study.nviews, declared_no_view) if declared_no_view else study.nviews
     per_view, per_view_warnings = validated_per_view(
-        study.cfg_dir, study.nviews, options.per_view_files.get(study.mode, {})
+        study.cfg_dir, source_no_view, options.per_view_files.get(study.mode, {})
     )
-    # The SDK consumes only the projections declared by fdkPara's noView; raw dirs may
-    # hold more frames (Mode1: 1046 raw vs noView=1020) which must be dropped, otherwise
-    # the full subset would run with more projections than the per-view matrix rows.
-    source_no_view = _read_no_view(study.cfg_dir / "fdkPara.xml")
     workspace = _workspace_context(study, output_root, options, prefix_parts)
     try:
         full_raw, full_cfg = build_full_workspace(
@@ -780,9 +783,18 @@ def reconstruct_study(
         )
         workspaces = {"full": (full_raw, full_cfg)}
         if split_subsets:
-            even_indices, odd_indices = split_projection_indices(study.nviews)
-            even_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, even_indices, workspace / "even", options.link_mode, per_view)
-            odd_ws = build_subset_workspace(study.raw_dir, study.cfg_dir, odd_indices, workspace / "odd", options.link_mode, per_view)
+            if study.mode.casefold() == "mode1":
+                even_indices, odd_indices = split_projection_indices_blockwise(source_no_view, block_size=2)
+            else:
+                even_indices, odd_indices = split_projection_indices(source_no_view)
+            even_ws = build_subset_workspace(
+                study.raw_dir, study.cfg_dir, even_indices, workspace / "even",
+                options.link_mode, per_view, per_view_count=source_no_view,
+            )
+            odd_ws = build_subset_workspace(
+                study.raw_dir, study.cfg_dir, odd_indices, workspace / "odd",
+                options.link_mode, per_view, per_view_count=source_no_view,
+            )
             workspaces["even"] = (even_ws.raw_dir, even_ws.cfg_dir)
             workspaces["odd"] = (odd_ws.raw_dir, odd_ws.cfg_dir)
 
@@ -839,6 +851,13 @@ def reconstruct_study(
             outputs[name] = f"{rel_prefix}/{name}"
 
         record = _base_record(study, options, group)
+        record["source_no_view"] = source_no_view
+        if split_subsets:
+            record["even_views"] = len(even_indices)
+            record["odd_views"] = len(odd_indices)
+            record["split_pattern"] = (
+                "two_on_two_off" if study.mode.casefold() == "mode1" else "alternating_frames"
+            )
         record.update({
             "status": "success",
             "skipped": False,
@@ -879,7 +898,15 @@ def _base_record(study: Study, options: VariantOptions, group: ReconGroup) -> di
         "split": split,
     }
     if split:
-        even_idx, odd_idx = split_projection_indices(study.nviews)
+        source_no_view = _read_no_view(study.cfg_dir / "fdkPara.xml") or study.nviews
+        source_no_view = min(study.nviews, source_no_view)
+        if study.mode.casefold() == "mode1":
+            even_idx, odd_idx = split_projection_indices_blockwise(source_no_view, block_size=2)
+            record["split_pattern"] = "two_on_two_off"
+        else:
+            even_idx, odd_idx = split_projection_indices(source_no_view)
+            record["split_pattern"] = "alternating_frames"
+        record["source_no_view"] = source_no_view
         record["even_views"] = len(even_idx)
         record["odd_views"] = len(odd_idx)
     if options.top_dir:

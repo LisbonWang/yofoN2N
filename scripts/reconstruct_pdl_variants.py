@@ -104,14 +104,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="How raw projections are placed into the temp workspace")
     parser.add_argument("--per-view-file", action="append", metavar="NAME=BYTES", default=None,
                         help="Ancillary per-view binary width to slice in subsets; repeatable. "
-                             "Default by mode: Mode2/Mode3 projectionMatrix.bin=84, Mode1 none; "
+                             "Default by mode: Mode1/Mode2/Mode3 projectionMatrix.bin=84; "
                              "modes without an entry (e.g. Mode0) copy such files whole")
     parser.add_argument("--step-modules", default=",".join(DEFAULT_STEP_MODULES),
                         help="Comma-separated modules whose step must stay even for downsampled subsets")
     parser.add_argument("--split-modes", default=",".join(DEFAULT_SPLIT_MODES),
-                        help="Comma-separated modes whose scans are split into even/odd subsets. "
-                             "Modes not listed (e.g. the odd/even dual-geometry Mode1) reconstruct from "
-                             "the full projection set only and produce no even/odd volumes")
+                        help="Comma-separated modes whose scans are split into complementary subsets. "
+                             "Mode1 uses two-frame alternating source blocks; Mode2/Mode3 use scalar parity. "
+                             "Modes not listed (e.g. Mode0) produce full volumes only")
     parser.add_argument("--mode", default=None, help="Only reconstruct studies of this mode, e.g. Mode2")
     parser.add_argument("--groups-config", type=Path, default=DEFAULT_GROUPS_CONFIG,
                         help="JSON file defining the reconstruction groups (source modes + fdkPara geometry + standard filter file)")
@@ -125,6 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-pwls", action="store_true",
                         help="Disable the PWLS+Hamming patch (data1-style: standard filter used verbatim)")
     parser.add_argument("--limit", type=int, default=None, help="Process at most this many studies (useful for smoke tests)")
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="Exclude a (study_uid, group) work item: repeat the flag as "
+                             "'<study_uid>:<group>' or just '<study_uid>' to drop every group of that study. "
+                             "Use for items that hang the engine (e.g. corrupt/mis-calibrated projection data)")
     parser.add_argument("--overwrite", action="store_true", help="Reconstruct studies even if all outputs already exist")
     parser.add_argument("--continue-on-error", action="store_true", help="Keep going after a failing study")
     parser.add_argument("--retries", type=int, default=2,
@@ -171,6 +175,7 @@ def main() -> int:
     if args.limit is not None:
         studies = studies[: args.limit]
 
+    excluded = set(args.exclude)
     # (study, group) work items; studies whose mode matches no group are reported as skipped
     work: list[tuple[Any, Any]] = []
     for study in studies:
@@ -180,6 +185,12 @@ def main() -> int:
                             "reason": f"mode {study.mode} matches no recon group"})
             continue
         for group in matched:
+            if study.study_uid in excluded or f"{study.study_uid}:{group.name}" in excluded:
+                skipped.append({"case_id": study.case_id, "study_uid": study.study_uid,
+                                "group": group.name, "reason": "excluded via --exclude (engine hang)"})
+                print(f"{study.case_id}/{study.study_uid} [{group.name}]: SKIPPED excluded "
+                      "(engine hang)", flush=True)
+                continue
             work.append((study, group))
 
     # Drop studies whose config is an incomplete copy: the engine dies with an opaque

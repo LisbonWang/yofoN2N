@@ -36,6 +36,29 @@ def split_projection_indices(count: int) -> tuple[list[int], list[int]]:
     return list(range(0, count, 2)), list(range(1, count, 2))
 
 
+def split_projection_indices_blockwise(
+    count: int,
+    block_size: int = 2,
+) -> tuple[list[int], list[int]]:
+    """Split alternating source blocks into complementary projection subsets.
+
+    Mode1 dual-source scans alternate in consecutive two-frame blocks: source A
+    contributes frames 0,1, then source B contributes frames 2,3, and so on.
+    The returned subsets therefore follow ``A A B B`` rather than scalar parity.
+    """
+    if count < 1:
+        raise ValueError("Projection count must be positive")
+    if block_size < 1:
+        raise ValueError("block_size must be positive")
+    first: list[int] = []
+    second: list[int] = []
+    for start in range(0, count, block_size):
+        block = list(range(start, min(start + block_size, count)))
+        block_index = start // block_size
+        (first if block_index % 2 == 0 else second).extend(block)
+    return first, second
+
+
 def _copy_or_link(src: Path, dst: Path, mode: str) -> None:
     if mode not in {"auto", "copy", "hardlink"}:
         raise ValueError("link_mode must be auto, copy, or hardlink")
@@ -73,6 +96,7 @@ def build_subset_workspace(
     destination: os.PathLike[str] | str,
     link_mode: str = "auto",
     per_view_files: dict[str, int | None] | None = None,
+    per_view_count: int | None = None,
 ) -> SubsetWorkspace:
     raw_files = numbered_raw_files(raw_dir)
     cfg_path = Path(cfg_dir)
@@ -104,10 +128,13 @@ def build_subset_workspace(
     # An empty mapping is a legitimate "no per-view slicing" declaration (e.g. Mode1 keeps
     # projectionMatrix.bin as a shared whole file); only fall back when None was passed.
     widths = per_view_files if per_view_files is not None else {"projectionMatrix.bin": 21 * 4}
+    source_view_count = len(raw_files) if per_view_count is None else per_view_count
+    if selected and max(selected) >= source_view_count:
+        raise ValueError("indices exceed per-view source row count")
     for name, width in widths.items():
         if width is None:
             continue
         source = cfg_path / name
         if source.exists():
-            _subset_binary(source, out_cfg / name, selected, len(raw_files), width)
+            _subset_binary(source, out_cfg / name, selected, source_view_count, width)
     return SubsetWorkspace(out, out_raw, out_cfg, tuple(numbered_raw_files(out_raw)), selected, len(selected))

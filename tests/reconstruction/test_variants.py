@@ -423,32 +423,46 @@ def test_reconstruct_study_mode0_no_per_view(tmp_path):
     assert all(c["raw_count"] == 5 for c in calls)
 
 
-def test_reconstruct_study_mode1_no_split(tmp_path):
-    """Mode1 (odd/even dual-geometry, not in split modes) is rebuilt from the full set only.
+def test_reconstruct_study_mode1_uses_declared_views_and_blockwise_dual_source_split(tmp_path):
+    """Mode1 uses fdkPara noView and splits dual-source pairs as 0011 / 0011.
 
-    Even with more raw frames than fdkPara noView (1046 raw vs 1020 noView in the real
-    data), the full workspace keeps only the declared projection count so the per-view
-    matrix stays in sync; the extra frames are dropped, matching SDK behaviour.
+    The real scan has 1046 files but noView=1020.  Only the declared prefix is valid.
+    Within it, source A takes two consecutive frames then skips two; source B takes the
+    complementary pair.  projectionMatrix.bin must be sliced with exactly those indices.
     """
-    study = _make_study(tmp_path, count=7, mode="Mode1")
-    # simulate the real Mode1 mismatch: fdkPara declares fewer views than raw frames
+    study = _make_study(tmp_path, count=10, mode="Mode1")
     fdk = study.cfg_dir / "fdkPara.xml"
-    fdk.write_text(fdk.read_text(encoding="utf-8").replace("<noView>7</noView>", "<noView>5</noView>"), encoding="utf-8")
+    fdk.write_text(fdk.read_text(encoding="utf-8").replace("<noView>10</noView>", "<noView>8</noView>"), encoding="utf-8")
+    # Real Mode1 matrix has noView rows (1020), not all raw-directory frames (1046).
+    matrix = study.cfg_dir / "projectionMatrix.bin"
+    matrix.write_bytes(matrix.read_bytes()[:8 * 84])
     out = tmp_path / "out"
     calls = []
     group = _make_group(name="Mode1_1615", modes=("Mode1",))
-    options = VariantOptions(xday_dir=tmp_path / "sdk", keep_workspace=True, top_dir="PDL")
-    record = reconstruct_study(study, group, out, options, reconstruct_fn=_make_fake_reconstruct(calls))
+    options = VariantOptions(xday_dir=tmp_path / "sdk", keep_workspace=True,
+                             top_dir="PDL", split_modes=("Mode1", "Mode2", "Mode3"))
+    record = reconstruct_study(study, group, out, options,
+                               reconstruct_fn=_make_fake_reconstruct(calls))
 
     assert record["status"] == "success"
-    assert record["split"] is False
-    assert set(record["outputs"]) == {"full.raw", "full.marfi.raw", "full.bhc.raw", "full.marfi.bhc.raw"}
-    assert len(calls) == 4
-    # the full workspace is truncated to the declared noView=5
-    assert all(c["raw_count"] == 5 for c in calls)
+    assert record["split"] is True
+    assert record["source_no_view"] == 8
+    assert record["split_pattern"] == "two_on_two_off"
+    assert record["even_views"] == 4 and record["odd_views"] == 4
+    assert set(record["outputs"]) == {
+        "even.raw", "odd.raw", "full.raw", "full.marfi.raw",
+        "full.bhc.raw", "full.marfi.bhc.raw",
+    }
+    assert sorted(c["raw_count"] for c in calls) == [4, 4, 8, 8, 8, 8]
+
     ws = out / "PDL" / "Mode1_1615" / "CASE-1" / "STUDY-1" / "workspace"
-    assert _no_view(ws / "full" / "config") == 5
-    assert len(list((ws / "full" / "raw").glob("*.raw"))) == 5
+    assert _no_view(ws / "full" / "config") == 8
+    assert _no_view(ws / "even" / "config") == 4
+    assert _no_view(ws / "odd" / "config") == 4
+    even_matrix = struct.unpack("<84f", (ws / "even" / "config" / "projectionMatrix.bin").read_bytes())
+    odd_matrix = struct.unpack("<84f", (ws / "odd" / "config" / "projectionMatrix.bin").read_bytes())
+    assert [even_matrix[i * 21] for i in range(4)] == [0.0, 1.0, 4.0, 5.0]
+    assert [odd_matrix[i * 21] for i in range(4)] == [2.0, 3.0, 6.0, 7.0]
 
 
 def test_reconstruct_study_standard_filter_replaced_or_kept(tmp_path):

@@ -19,6 +19,10 @@ Semantics (decided 2026-09-02 with the dataset owner):
 - ``--test-groups`` moves every record of those groups into the test split
   (used for cross-mode evaluation, e.g. ``Mode3_1609``); the remaining records
   are split train/val/test by ``--ratios`` with a fixed ``--seed``.
+- ``--exclude-groups`` is an explicit safety filter applied after ``--groups``;
+  excluded records never enter ``records`` or any train/val/test split.  The blocked
+  groups ``Mode0_1615`` and ``Mode1_1615`` are always excluded even if callers pass
+  an empty override.
 
 The manifest must be written into the *same directory* as ``--output-root``:
 datasets resolve the relative ``outputs`` paths from the manifest location.
@@ -52,6 +56,10 @@ COPIED_FIELDS = (
 #: base reconstruction volumes the N2N mappings rely on (for the presence report)
 BASE_SUBSETS = ("even", "odd", "full")
 
+#: Training safety policy: 1615 reconstructions are excluded until the Mode1 dual-source
+#: split satisfies XDay's single-source projection requirements and passes image-level QC.
+DEFAULT_EXCLUDE_GROUPS = ("Mode0_1615", "Mode1_1615")
+
 
 def make_key(study_uid: str, group: str) -> str:
     """Composite key unique across groups (and across records by construction)."""
@@ -60,7 +68,11 @@ def make_key(study_uid: str, group: str) -> str:
 
 def build_manifest(index: dict[str, Any], *, groups: Iterable[str],
                    seed: int = 42, ratios: tuple[float, float, float] = (0.8, 0.1, 0.1),
-                   test_groups: Iterable[str] = ()) -> tuple[dict[str, Any], dict[str, Any]]:
+                   test_groups: Iterable[str] = (),
+                   exclude_groups: Iterable[str] = DEFAULT_EXCLUDE_GROUPS,
+                   case_prefix: str = "", per_case: int | None = None,
+                   target_total: int | None = None,
+                   require_outputs: Iterable[str] = ()) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ``(manifest, stats)`` for the selected groups.
 
     ``manifest`` follows the same top-level layout as
@@ -69,26 +81,76 @@ def build_manifest(index: dict[str, Any], *, groups: Iterable[str],
     plus provenance fields.  ``stats`` carries per-split/per-group counters for
     the console report.
     """
-    wanted = set(groups)
+    requested = set(groups)
+    excluded = (set(exclude_groups) | set(DEFAULT_EXCLUDE_GROUPS)) & requested
+    wanted = requested - excluded
     test = set(test_groups)
-    unknown_groups = wanted - {item["group"] for item in index.get("records", [])}
+    available = {item["group"] for item in index.get("records", [])}
+    unknown_groups = requested - available
     if unknown_groups:
         raise ValueError(f"groups not present in the index: {sorted(unknown_groups)}")
+    if not wanted:
+        raise ValueError("all requested groups were excluded")
     for group in test:
         if group not in wanted:
-            raise ValueError(f"--test-groups {group!r} is not among --groups")
+            raise ValueError(f"--test-groups {group!r} is not among the included groups")
 
+    excluded_counts = Counter(
+        item["group"] for item in index.get("records", [])
+        if item.get("group") in excluded and item.get("status") in {None, "success"}
+    )
     records: list[dict[str, Any]] = []
     for item in index["records"]:
         if item.get("group") not in wanted:
             continue
         if item.get("status") not in {None, "success"}:
             continue
+        if case_prefix and not str(item.get("case_id", "")).startswith(case_prefix):
+            continue
+        outputs = item.get("outputs", {})
+        if any(name not in outputs for name in require_outputs):
+            continue
         record = {field: item[field] for field in COPIED_FIELDS if field in item}
         record["key"] = make_key(record["study_uid"], record["group"])
         records.append(record)
     if not records:
         raise ValueError(f"no records selected for groups {sorted(wanted)}")
+
+    available_by_case = Counter(record["case_id"] for record in records)
+    if per_case is not None or target_total is not None:
+        if per_case is None or per_case < 1:
+            raise ValueError("per_case must be a positive integer when stratified sampling is enabled")
+        if target_total is None or target_total < 1:
+            raise ValueError("target_total must be a positive integer when stratified sampling is enabled")
+        if target_total > len(records):
+            raise ValueError(f"target_total={target_total} exceeds {len(records)} available records")
+
+        by_case: dict[str, list[dict[str, Any]]] = {}
+        for record in records:
+            by_case.setdefault(record["case_id"], []).append(record)
+        rng = random.Random(seed)
+        selected: dict[str, list[dict[str, Any]]] = {}
+        remaining: dict[str, list[dict[str, Any]]] = {}
+        for case_id in sorted(by_case):
+            candidates = sorted(by_case[case_id], key=lambda record: record["key"])
+            rng.shuffle(candidates)
+            take = min(per_case, len(candidates))
+            selected[case_id] = candidates[:take]
+            remaining[case_id] = candidates[take:]
+
+        selected_count = sum(len(items) for items in selected.values())
+        if selected_count > target_total:
+            raise ValueError(
+                f"baseline per-case sampling selects {selected_count}, exceeding target_total={target_total}")
+        extra_needed = target_total - selected_count
+        while extra_needed:
+            eligible = [case_id for case_id, items in remaining.items() if items]
+            if not eligible:
+                raise ValueError(f"cannot fill target_total={target_total}; only {len(records)} available")
+            case_id = min(eligible, key=lambda key: (len(selected[key]), key))
+            selected[case_id].append(remaining[case_id].pop(0))
+            extra_needed -= 1
+        records = [record for case_id in sorted(selected) for record in selected[case_id]]
 
     keys = [record["key"] for record in records]
     if len(set(keys)) != len(keys):
@@ -131,6 +193,11 @@ def build_manifest(index: dict[str, Any], *, groups: Iterable[str],
         "seed": seed,
         "ratios": list(ratios),
         "groups": sorted(wanted),
+        "exclude_groups": sorted(excluded),
+        "case_prefix": case_prefix,
+        "per_case": per_case,
+        "target_total": target_total,
+        "require_outputs": list(require_outputs),
         "test_groups": sorted(test),
         "records": records,
         "splits": assignment,
@@ -140,6 +207,9 @@ def build_manifest(index: dict[str, Any], *, groups: Iterable[str],
         "total": len(records),
         "pool": len(pool),
         "forced_test": len(forced),
+        "excluded_by_group": dict(sorted(excluded_counts.items())),
+        "available_by_case": dict(sorted(available_by_case.items())),
+        "selected_by_case": dict(sorted(Counter(record["case_id"] for record in records).items())),
         "by_split": {name: len(keys_) for name, keys_ in assignment.items()},
         "by_split_group": {
             name: dict(sorted(Counter(record["group"] for record in records
@@ -168,6 +238,10 @@ def validate_location(output_root: str | Path, out: str | Path) -> None:
 def _report(stats: dict[str, Any]) -> None:
     print(f"selected {stats['total']} studies  "
           f"(random pool {stats['pool']}, forced into test {stats['forced_test']})")
+    if stats["excluded_by_group"]:
+        print(f"  excluded groups: {stats['excluded_by_group']}")
+    if stats["selected_by_case"]:
+        print(f"  selected by case: {stats['selected_by_case']}")
     for name in ("train", "val", "test"):
         detail = ", ".join(f"{group}:{count}" for group, count in stats["by_split_group"][name].items())
         print(f"  {name:<5} {stats['by_split'][name]:>4}  ({detail})")
@@ -185,8 +259,17 @@ def main() -> int:
     parser.add_argument("--groups", required=True, help="comma-separated groups to include, e.g. Mode2_1609,Mode3_1609")
     parser.add_argument("--out", type=Path, required=True, help="manifest output path (same dir as --output-root)")
     parser.add_argument("--test-groups", default="", help="comma-separated groups forced entirely into test")
+    parser.add_argument("--exclude-groups", default=",".join(DEFAULT_EXCLUDE_GROUPS),
+                        help="comma-separated groups removed from the manifest even if listed in --groups "
+                             "(default: Mode0_1615,Mode1_1615)")
     parser.add_argument("--ratios", nargs=3, type=float, default=(0.8, 0.1, 0.1),
                         help="train/val/test ratios applied to the non-test-groups pool")
+    parser.add_argument("--case-prefix", default="", help="only include case_id values with this prefix")
+    parser.add_argument("--per-case", type=int, help="baseline random sample count per case/device")
+    parser.add_argument("--target-total", type=int,
+                        help="final distinct-study count; remaining slots are assigned to the least represented eligible cases")
+    parser.add_argument("--require-outputs", default="",
+                        help="comma-separated output filenames required before a record is eligible")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -194,8 +277,13 @@ def main() -> int:
     index = json.loads(Path(args.index).read_text(encoding="utf-8"))
     groups = [group.strip() for group in args.groups.split(",") if group.strip()]
     test_groups = [group.strip() for group in args.test_groups.split(",") if group.strip()]
+    exclude_groups = [group.strip() for group in args.exclude_groups.split(",") if group.strip()]
+    require_outputs = [name.strip() for name in args.require_outputs.split(",") if name.strip()]
     manifest, stats = build_manifest(index, groups=groups, seed=args.seed,
-                                     ratios=tuple(args.ratios), test_groups=test_groups)
+                                     ratios=tuple(args.ratios), test_groups=test_groups,
+                                     exclude_groups=exclude_groups, case_prefix=args.case_prefix,
+                                     per_case=args.per_case, target_total=args.target_total,
+                                     require_outputs=require_outputs)
     Path(args.out).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     _report(stats)
     print(f"wrote {args.out}")
