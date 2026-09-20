@@ -65,11 +65,18 @@ from .subset import (
 #: subset name -> display name used in output file names
 SUBSETS = ("full", "even", "odd")
 
-#: modes whose scans get complementary half-view reconstruction.  Mode2/Mode3 use
-#: scalar parity (0,2,4... vs 1,3,5...).  Mode1 is a dual-source scan whose valid
-#: prefix is declared by fdkPara noView (1020 of 1046 files) and whose sources
-#: alternate in two-frame blocks: 0,1 / 2,3 / 4,5 / 6,7 ... .
-DEFAULT_SPLIT_MODES: tuple[str, ...] = ("Mode1", "Mode2", "Mode3")
+#: modes whose scans get complementary half-view reconstruction by default.
+#: Mode2/Mode3 are self-consistent (raw views == fdkPara noView == matrix rows) and
+#: use scalar parity (0,2,4... vs 1,3,5...), so the halves reconstruct correctly.
+#:
+#: Mode1 is deliberately NOT in this default.  Its two-frame blockwise split
+#: (0,1 / 2,3 / ... , see :func:`split_projection_indices_blockwise`) does not satisfy
+#: XDay's single-source even-projection requirement and the resulting volumes carry
+#: artifacts, so the 510/510 Mode1 data was withdrawn on 2026-09-17.  The capability
+#: is kept and still works when asked for explicitly
+#: (``--split-modes Mode1,Mode2,Mode3``); it stays opt-in until the SDK constraint is
+#: understood.
+DEFAULT_SPLIT_MODES: tuple[str, ...] = ("Mode2", "Mode3")
 
 #: default post-processing combos: tag -> xday --post-procs chain
 DEFAULT_COMBOS: tuple[tuple[str, str], ...] = (

@@ -110,7 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Comma-separated modules whose step must stay even for downsampled subsets")
     parser.add_argument("--split-modes", default=",".join(DEFAULT_SPLIT_MODES),
                         help="Comma-separated modes whose scans are split into complementary subsets. "
-                             "Mode1 uses two-frame alternating source blocks; Mode2/Mode3 use scalar parity. "
+                             "Mode2/Mode3 use scalar parity; Mode1 uses two-frame alternating source "
+                             "blocks and must be requested explicitly (its split is known to produce "
+                             "artifacts, see variants.DEFAULT_SPLIT_MODES). "
                              "Modes not listed (e.g. Mode0) produce full volumes only")
     parser.add_argument("--mode", default=None, help="Only reconstruct studies of this mode, e.g. Mode2")
     parser.add_argument("--groups-config", type=Path, default=DEFAULT_GROUPS_CONFIG,
