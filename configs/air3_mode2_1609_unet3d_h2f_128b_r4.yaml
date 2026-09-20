@@ -1,0 +1,59 @@
+# AIReduceNoise3 · Mode2_1609 · four-domain joint training · 方案B r4b（朴素递归第 3 轮）
+# r4 监督目标 = M3b(full) 直接作为教师目标（不再混合）：scripts/prepare_full_dn_targets.py
+#   --config configs/air3_mode2_1609_unet3d_h2f_128b_r4.yaml \
+#   --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json \
+#   --checkpoint runs/air3_mode2_1609_unet3d_h2f_128b_r3/best.pt --arch unet3d \
+#   --target-suffix dn_3d_128b_r4 --splits train,val --tiled --patch-hw 256 \
+#   --overlap-d 16 --overlap-hw 16 --batch-size 2 --device cuda:0
+# 门控（仅目标层，无混合层）：scripts/check_r1b_target_gates.py \
+#   --prep-overview /data/raid0/yyc/AIReduceNoise3/prepare_full_dn_3d_128b_r4_overview.json \
+#   --expect-studies 200 --label r4b
+# 启动（热启动 r3b best.pt，非 resume；opt/sched 冷启动）：
+#   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 /opt/anaconda3/envs/pytorch201/bin/python \
+#     scripts/train_voxel.py --arch unet3d \
+#     --config configs/air3_mode2_1609_unet3d_h2f_128b_r4.yaml \
+#     --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json \
+#     --run-dir runs/air3_mode2_1609_unet3d_h2f_128b_r4 \
+#     --init-weights runs/air3_mode2_1609_unet3d_h2f_128b_r3/best.pt
+# 除监督目标与 run_dir 外，超参与 128_r0 / 128b_r{1,2,3} 完全一致（控制变量）。
+# 注意：r4 是文档 §4 提到的"再加一轮"（软 4/骨 5）；递归收益递减，收敛后须用
+# scripts/eval_rounds_banded.py 做分带验收，若骨带过平滑则交付停在 r2b/r3b。
+reconstruction:
+  source_root: '/data/raid0/yyc/AIReduceNoise3'
+  output_root: '/data/raid0/yyc/AIReduceNoise3/PDL'
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+
+data:
+  manifest: /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json
+  metric_data_range: 4.0
+  seed: 42
+  augment: true
+  # r4 监督：even/odd -> 教师目标 full.dn_3d_128b_r4（= M3b(full)）
+  mappings: [even->full.dn_3d_128b_r4, odd->full.dn_3d_128b_r4]
+  residuals: [bhc, marfi]
+  voxel_depth: 128
+  stride: 112
+  patch_size: 256
+
+model:
+  arch: unet3d
+  in_channels: 1
+  out_channels: 1
+  base_channels: 16
+  depth: 4
+  residual: true
+
+training:
+  epochs: 100
+  batch_size: 1
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  num_workers: 8
+  amp: true
+  gradient_clip: 1.0
+  patience: 5
+  device: cuda:0
+  run_dir: runs/air3_mode2_1609_unet3d_h2f_128b_r4
+  plot_interval: 5

@@ -55,7 +55,7 @@ training:
   num_workers: 8
   amp: true
   gradient_clip: 1.0
-  patience: 15
+  patience: 5
   device: cuda:0
   run_dir: runs/1609v2_n2n_3d_h2f_128
   plot_interval: 5

@@ -122,3 +122,45 @@ def estimate_noise_std_immerkaer(
     if not sigmas:
         return float("nan")
     return float(np.median(sigmas))
+
+
+_LAPLACIAN = np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], dtype=np.float32)
+
+
+def band_noise_std_immerkaer(
+    volume: np.ndarray,
+    mask: np.ndarray,
+    *,
+    max_slices: int = 32,
+) -> float:
+    """Immerkaer sigma restricted to an explicit voxel ``mask`` (a density band).
+
+    Same estimator as :func:`estimate_noise_std_immerkaer`, but the tissue
+    selector is supplied by the caller instead of being derived from the
+    intensity itself.  This is what the recursive scheme's *banded* gates need:
+    e.g. key the bands on the (denoised) r2 intensity, then measure the residual
+    noise of every candidate volume inside exactly the same voxels, so the
+    comparison across rounds is apples-to-apples.
+
+    ``mask`` must have the volume's shape; only ``max_slices`` evenly-spaced
+    slices are used, and the returned value is the median over slices.
+    """
+    v = np.asarray(volume, dtype=np.float32)
+    m = np.asarray(mask, dtype=bool)
+    if v.ndim != 3:
+        raise ValueError("volume must be 3D (z, y, x)")
+    if m.shape != v.shape:
+        raise ValueError(f"mask shape {m.shape} != volume shape {v.shape}")
+    v = _subsample_slices(v, max_slices)
+    m = _subsample_slices(m, max_slices)
+    sigmas: list[float] = []
+    for sl, mk in zip(v, m):
+        conv = convolve2d(sl, _LAPLACIAN, mode="valid")
+        inner = mk[1:-1, 1:-1]
+        if not np.any(inner):
+            continue
+        c = conv[inner]
+        sigmas.append(float(np.sqrt(np.sum(c * c) / (36.0 * c.size))))
+    if not sigmas:
+        return float("nan")
+    return float(np.median(sigmas))

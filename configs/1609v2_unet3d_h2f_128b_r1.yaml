@@ -1,0 +1,52 @@
+# 方案 B（blend-at-round-1）· 128 窗口递归 round1
+# r1 目标 = full*(1-w) + M0(full)*w，w = smoothstep，μ∈[0.2,0.4] 对应 0→1（键 = M0 输出强度）：
+#   软组织带（<=0.2）目标 = 原始 full（该带递归晚一轮启动），骨带（>=0.4）目标 = M0 输出。
+# 生成目标：scripts/blend_dn_targets.py --r1-suffix full --r2-suffix dn_3d_128_r1
+#   --target-suffix dn_3d_128b_r1 --lo 0.2 --hi 0.4 --kind smoothstep --splits train,val
+#   （M0(full) = 旧链目标文件 full.dn_3d_128_r1.raw，服务器已存在，直接复用，无需重新推理）
+# 其余超参与 1609v2_unet3d_h2f_128.yaml 完全一致（vd128/stride112/patch256/base16d4/batch1）。
+# 启动（服务器 192.168.36.102）：
+#   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 /opt/anaconda3/envs/pytorch201/bin/python \
+#     scripts/train_voxel.py --arch unet3d \
+#     --config configs/1609v2_unet3d_h2f_128b_r1.yaml \
+#     --manifest /data/raid0/yyc/AIReduceNoise2/splits_1609v2.json \
+#     --run-dir runs/1609v2_n2n_3d_h2f_128b_r1 \
+#     --init-weights runs/1609v2_n2n_3d_h2f_128/best.pt
+reconstruction:
+  source_root: '/data/raid0/yyc/AIReduceNoise2'
+  output_root: '/data/raid0/yyc/AIReduceNoise2/PDL'
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+
+data:
+  manifest: /data/raid0/yyc/AIReduceNoise2/splits_1609v2.json
+  metric_data_range: 4.0
+  seed: 42
+  augment: true
+  # r1 监督：even/odd -> 混合目标 full.dn_3d_128b_r1（软组织=full，骨=M0 输出）
+  mappings: [even->full.dn_3d_128b_r1, odd->full.dn_3d_128b_r1]
+  voxel_depth: 128
+  stride: 112
+  patch_size: 256
+
+model:
+  arch: unet3d
+  in_channels: 1
+  out_channels: 1
+  base_channels: 16
+  depth: 4
+  residual: true
+
+training:
+  epochs: 100
+  batch_size: 1
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  num_workers: 8
+  amp: true
+  gradient_clip: 1.0
+  patience: 5
+  device: cuda:0
+  run_dir: runs/1609v2_n2n_3d_h2f_128b_r1
+  plot_interval: 5

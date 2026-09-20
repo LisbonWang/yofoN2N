@@ -25,7 +25,9 @@ For every study in the requested splits this script:
      and the round degenerates.
 
 Existing ``full.<suffix>.raw`` files are skipped (resume-safe); the manifest
-patch is idempotent and applied once after the loop.  Extra ``outputs`` keys
+patch is idempotent and applied once after the loop.  The overview JSON is
+merged across runs as well (one row per study), so a resumed generation still
+reports full coverage to the round gate.  Extra ``outputs`` keys
 do not affect plain half->full / half<->half datasets (they only request
 even/odd/full + residuals).
 
@@ -86,6 +88,25 @@ def _denoise_volume(model, arch: str, volume: np.ndarray, device: torch.device,
                                          overlap_d, overlap_hw, device, batch_size)
         return infer_volume_3d(model, volume, voxel_depth, device, batch_size)
     return infer_volume(model, volume, device, batch_size)
+
+
+def merge_overview_rows(previous: object, new_rows: list[dict]) -> list[dict]:
+    """Merge diagnostic rows across runs, keyed by study key (newest wins).
+
+    A resumed run only *creates* the missing targets, so aggregating over that
+    run alone would shrink the coverage the round gate sees (200 -> however
+    many were left) and cause a false gate failure.  Rows are therefore merged
+    with the previous overview of the same suffix.
+    """
+    merged: dict[str, dict] = {}
+    if isinstance(previous, dict):
+        for row in previous.get("rows", []) or []:
+            if isinstance(row, dict) and row.get("key"):
+                merged[str(row["key"])] = row
+    for row in new_rows:
+        if isinstance(row, dict) and row.get("key"):
+            merged[str(row["key"])] = row
+    return sorted(merged.values(), key=lambda row: str(row["key"]))
 
 
 def main() -> int:
@@ -210,12 +231,26 @@ def main() -> int:
         print(f"[manifest] no change needed for {outputs_key}", flush=True)
 
     # aggregate diagnostics
-    if overview_rows:
+    #
+    # Merge with a previous overview of the same suffix: a resumed run only
+    # *creates* the missing targets, so aggregating over this run alone would
+    # shrink the coverage the gate sees (200 -> however many were left) and
+    # produce a false gate failure.  Rows are keyed by study, newest wins.
+    overview_path = base / f"prepare_full_{args.target_suffix}_overview.json"
+    previous_overview: object = None
+    if overview_path.exists():
+        try:
+            previous_overview = json.loads(overview_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous_overview = None  # unreadable/legacy overview -> rebuild from this run alone
+    all_rows = merge_overview_rows(previous_overview, overview_rows)
+
+    if all_rows:
         agg: dict[str, dict] = {}
 
         # noise-level comparison -- the actual gate (Immerkaer only; the median-filter
         # estimator is ~20s/volume and is deliberately NOT run in the training loop).
-        noise_rows = [row for row in overview_rows if row.get("noise")]
+        noise_rows = [row for row in all_rows if row.get("noise")]
         for est in ("immerkaer",):
             full_vals = np.asarray([row["noise"][f"full_{est}"] for row in noise_rows], dtype=np.float64)
             dn_vals = np.asarray([row["noise"][f"dn_{est}"] for row in noise_rows], dtype=np.float64)
@@ -231,10 +266,10 @@ def main() -> int:
                 "n": int(len(noise_rows)),
             }
 
-        overview_path = base / f"prepare_full_{args.target_suffix}_overview.json"
         overview_path.write_text(json.dumps({
             "splits": splits,
             "n_new": n_new, "n_existing": n_existing, "n_skip_missing": n_skip_missing,
+            "n_rows": len(all_rows),
             "teacher_checkpoint": str(args.checkpoint),
             "target_suffix": args.target_suffix,
             "note": (
@@ -244,9 +279,12 @@ def main() -> int:
                 "delta > 0 (relative_reduction_mean > 0) means the teacher produced a "
                 "meaningfully cleaner target and the round is worth training. A ~0 delta means "
                 "the teacher did not clean full (degenerate round). The median-filter estimator "
-                "is too slow for the training loop and is intentionally not computed."
+                "is too slow for the training loop and is intentionally not computed. "
+                "'rows' keeps one diagnostic row per study and is merged across runs, so the "
+                "gate's coverage stays complete even after a resumed/partial generation."
             ),
-            **agg}, indent=2), encoding="utf-8")
+            **agg,
+            "rows": all_rows}, indent=2), encoding="utf-8")
         print(f"\noverview written: {overview_path}")
         for est in ("immerkaer",):
             a = agg[f"noise_{est}"]
