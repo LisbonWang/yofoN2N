@@ -64,15 +64,6 @@ recon () {  # tag chain out_win  [filter-file]
     echo "[FAIL] $tag  (see $log)"
     tail -5 "$log"
   fi
-  # The SDK can drop a viewer descriptor named input.json next to the volume.  It is
-  # the same untrustworthy 640/640/600 template as 1.json/full.json (not generated
-  # per study), so it is parked in _logs/ to keep the case folder raw-only.
-  local dir_b
-  dir_b=$(printf '%s' "$out" | sed 's|/[^/]*$||; s|^G:|/g|')
-  if [ -f "$dir_b/input.json" ]; then
-    mv "$dir_b/input.json" "$LOGS/stray_${tag}_input.json"
-    echo "       (parked stray input.json -> _logs/stray_${tag}_input.json)"
-  fi
 }
 
 for entry in "${CASES[@]}"; do

@@ -366,6 +366,10 @@ def render_readme(manifest: dict) -> str:
                "`volume_640X640X360_f32_ai_r4b_sharp.raw`。\n")
     out.append("AI 处理过的四卷都带 `_ai_` 标识。`*.raw.json` 是重建溯源 sidecar，"
                "`case.json` 是本案汇总（尺寸、md5、σ、模型哈希）。\n")
+    out.append("> 用阅片工具打开过体数据后，夹里可能多出 80 字节的 `<卷名>.json`"
+               "（内容是 `{imageType,xLen,yLen,zLen}` 的固定模板，不是本包产物）。"
+               "它是查看器的临时文件，**不参与本包任何统计**；重新跑一遍组装脚本会忽略它，"
+               "要清走就把它移到 `_logs/viewer_tmp/`。\n")
 
     out.append("## 重建参数（两条链的唯一差别是降噪模块）\n")
     rec = manifest["reconstruction"]
