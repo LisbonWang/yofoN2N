@@ -15,6 +15,7 @@ from cbct_n2n.reconstruction import (
     apply_filter_file,
     build_full_workspace,
     discover_studies,
+    effective_view_count,
     fix_subsample_step,
     groups_for_mode,
     load_recon_groups,
@@ -51,21 +52,25 @@ _MODE_FDK = {
 }
 
 
-def _make_study(tmp_path: Path, count: int = 5, step: str = "2", mode: str = "Mode2") -> Study:
+def _make_study(tmp_path: Path, count: int = 5, step: str = "2", mode: str = "Mode2",
+                no_view: int | None = None) -> Study:
+    """Build a study fixture.  *no_view* defaults to *count*; pass a smaller value to
+    imitate Mode1 (1046 raw files, noView=1020, matrix rows only up to noView)."""
     raw = tmp_path / "raw"
     cfg = tmp_path / "cfg"
     raw.mkdir(parents=True, exist_ok=True)
     cfg.mkdir(parents=True, exist_ok=True)
     for i in range(count):
         (raw / f"{i + 1:05d}.raw").write_bytes(bytes([i]) * 64)
+    declared = count if no_view is None else no_view
     x_num, y_num, z_num = _MODE_FDK[mode]
     (cfg / "fdkPara.xml").write_text(
-        f"<FDK_sys_para><noView>{count}</noView>"
+        f"<FDK_sys_para><noView>{declared}</noView>"
         f"<xNum>{x_num}</xNum><yNum>{y_num}</yNum><zNum>{z_num}</zNum>"
         f"<xSpacing>0.25</xSpacing><ySpacing>0.25</ySpacing><zSpacing>0.25</zSpacing>"
         f"</FDK_sys_para>", encoding="utf-8")
     (cfg / "filter.xml").write_text(_filter_xml(step), encoding="utf-8")
-    (cfg / "projectionMatrix.bin").write_bytes(b"".join(struct.pack("<21f", *([i] * 21)) for i in range(count)))
+    (cfg / "projectionMatrix.bin").write_bytes(b"".join(struct.pack("<21f", *([i] * 21)) for i in range(declared)))
     (cfg / "weightR.bin").write_bytes(b"shared-calibration")
     return Study(
         case_id="CASE-1",
@@ -157,6 +162,60 @@ def test_build_full_workspace_copies_and_normalizes_no_view(tmp_path):
     assert len(list(raw_out.glob("*.raw"))) == 7
     assert _no_view(cfg_out) == 7
     assert (cfg_out / "weightR.bin").read_bytes() == b"shared-calibration"
+
+
+# ------------------------------------------------------- effective view count (Mode1 trap)
+
+
+def test_effective_view_count_clamps_to_the_declared_no_view(tmp_path):
+    """Mode1: 1046 raw files but noView=1020 and an 85680-byte matrix (1020 x 84).
+
+    Handing the SDK all 1046 frames makes it read 26 rows past the end of
+    projectionMatrix.bin; the volume then carries severe artifacts.
+    """
+    study = _make_study(tmp_path, count=12, no_view=10)
+    assert effective_view_count(study.nviews, study.cfg_dir) == 10
+
+
+def test_effective_view_count_keeps_the_raw_count_when_it_is_smaller(tmp_path):
+    """A study whose directory holds fewer frames than declared must not over-count."""
+    study = _make_study(tmp_path, count=5, no_view=9)
+    assert effective_view_count(study.nviews, study.cfg_dir) == 5
+
+
+def test_effective_view_count_falls_back_when_no_view_is_unreadable(tmp_path):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "fdkPara.xml").write_text("<FDK_sys_para><xNum>640</xNum></FDK_sys_para>",
+                                     encoding="utf-8")
+    assert effective_view_count(7, cfg) == 7
+    assert effective_view_count(7, tmp_path / "no-such-dir") == 7
+
+
+def test_reconstruct_study_clamps_mode1_to_the_declared_no_view(tmp_path):
+    """Regression for the review-package Mode1 artifacts.
+
+    The batch pipeline always passed ``min(nviews, noView)`` to build_full_workspace,
+    but the single-study rebuild passed ``study.nviews`` -- so a Mode1 workspace got
+    noView=1046 against 1020 valid frames.  The fake reconstruct asserts the
+    ``noView == workspace projection count`` invariant on every call.
+    """
+    study = _make_study(tmp_path, count=12, no_view=10, mode="Mode1")
+    out = tmp_path / "out"
+    calls = []
+    group = _make_group(name="Mode1_1615", modes=("Mode1",))
+    options = VariantOptions(xday_dir=tmp_path / "sdk", keep_workspace=True, top_dir="PDL")
+    record = reconstruct_study(study, group, out, options,
+                               reconstruct_fn=_make_fake_reconstruct(calls))
+
+    assert record["status"] == "success"
+    # Mode1 is not in DEFAULT_SPLIT_MODES -> full only, all four combos
+    assert sorted(c["post_procs"] for c in calls) == sorted(["", "BHC", "MARFI", "BHC MARFI"])
+    assert {c["raw_count"] for c in calls} == {10}
+
+    ws = out / "PDL" / "Mode1_1615" / "CASE-1" / "STUDY-1" / "workspace" / "full"
+    assert _no_view(ws / "config") == 10
+    assert len(list((ws / "raw").glob("*.raw"))) == 10
 
 
 def test_validated_per_view_drops_mismatched_files(tmp_path):

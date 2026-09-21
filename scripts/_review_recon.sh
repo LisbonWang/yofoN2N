@@ -12,10 +12,13 @@
 # volume_<X>X<Y>X<Z>_f32_traditional.raw (chain B), X/Y/Z = fdkPara xNum/yNum/zNum.
 #
 # Idempotent: recon_conventional_denoise.py skips an --out that already exists.
+# ONLY="02 03" limits the run to those case indices (default: all).
 set -u
 export PATH="/usr/bin:/bin:$PATH"
 export XDAY_DIR="D:/XDay Release/XDay 617.2_polyc"
 export PYTHONIOENCODING=utf-8
+
+ONLY="${ONLY:-}"
 
 PY=/c/Users/admin/anaconda3/python.exe
 REPO=/g/workspace/N2N
@@ -68,6 +71,7 @@ recon () {  # tag chain out_win  [filter-file]
 
 for entry in "${CASES[@]}"; do
   IFS='|' read -r idx GROUP CASE STUDY DIMS FF <<< "$entry"
+  if [ -n "$ONLY" ] && [[ " $ONLY " != *" $idx "* ]]; then continue; fi
   BASE="volume_${DIMS}_f32"
   TAIL="${STUDY##*.}"
   DIR="$OUTROOT/c${idx}_${GROUP}__${CASE}__${TAIL}"

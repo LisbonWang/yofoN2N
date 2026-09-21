@@ -13,6 +13,7 @@ from scripts.recon_conventional_denoise import (
     _parse_args,
     _probe_study,
 )
+from cbct_n2n.reconstruction import effective_view_count
 
 
 def _make_study(root: Path, case: str, study: str, *, raw_name: str, cfg_mode: str = "Mode2",
@@ -97,6 +98,23 @@ def test_default_chain_keeps_bhc_and_enables_both_denoisers():
     # BHC keeps the beam-hardening correction the full.bhc AI input already carries;
     # both conventional denoisers must be switched on for a like-for-like comparison.
     assert chain == ["BHC", "ReduceNoise", "Anisotropic"]
+
+
+def test_probe_study_reports_the_raw_file_count_not_the_declared_no_view(tmp_path):
+    """``study.nviews`` is the directory listing; the SDK consumes ``fdkPara noView``.
+
+    Mode1 ships 1046 ``*.raw`` files with ``noView=1020``.  The driver must clamp via
+    ``effective_view_count`` instead of trusting ``nviews`` -- passing the raw count
+    rewrote noView to 1046 and the 26 extra frames were reconstructed against geometry
+    that does not exist (severe artifacts; see the Mode1 regression in
+    tests/reconstruction/test_variants.py).
+    """
+    study_dir = _make_study(tmp_path, "CASE1", "STUDY1", raw_name=RAW_NAME, n_views=6)
+    fdk = study_dir / "config" / "recon" / "PDI1313" / "Mode2" / "fdkPara.xml"
+    fdk.write_text("<FDK_sys_para><noView>4</noView></FDK_sys_para>", encoding="utf-8")
+    study = _probe_study(tmp_path, "CASE1", "STUDY1")
+    assert study.nviews == 6                                       # raw listing
+    assert effective_view_count(study.nviews, study.cfg_dir) == 4   # what the SDK gets
 
 
 # ------------------------------------------------------------------ filter.xml swapping

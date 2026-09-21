@@ -37,6 +37,7 @@ CASES=(
 
 for entry in "${CASES[@]}"; do
   IFS='|' read -r idx shape <<< "$entry"
+  if [ -n "$ONLY" ] && [[ " $ONLY " != *" $idx "* ]]; then continue; fi
   set -- $shape                       # z y x
   BASE="volume_${3}X${2}X${1}_f32"
   IN_NAME=${BASE}_ai_r4b.raw

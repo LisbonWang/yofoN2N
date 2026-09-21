@@ -54,7 +54,7 @@ from cbct_n2n.reconstruction.variants import (  # noqa: E402
     fix_subsample_step,
     numbered_raw_files,
     subsets_for_mode,
-    _read_no_view,
+    effective_view_count,
 )
 
 INDEX_NAME = "reconstruction-index.json"
@@ -232,7 +232,7 @@ def main() -> int:
                     kv, ma = _parse_kv_ma(raw_dir.name)
                 brightness = _brightness_mean(cfg_dir)
                 beta = scale * brightness
-                source_no_view = _read_no_view(cfg_dir / "fdkPara.xml")
+                source_no_view = effective_view_count(nviews, cfg_dir)
                 nviews = int(rec.get("nviews") or len(numbered_raw_files(raw_dir)))
                 case_out.mkdir(parents=True, exist_ok=True)
                 workspace = Path(tempfile.mkdtemp(prefix=f"aired2_{rec['study_uid'][-12:]}_"))

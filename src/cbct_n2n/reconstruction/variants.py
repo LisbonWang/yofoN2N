@@ -397,6 +397,24 @@ def _read_no_view(fdk_path: str | Path) -> int | None:
         return None
 
 
+def effective_view_count(nviews: int, cfg_dir: str | Path) -> int:
+    """Number of projections XDay actually consumes for a study.
+
+    ``noView`` in ``fdkPara.xml`` is authoritative: a raw directory may hold more
+    frames than the config declares, and the extra ones have no valid image or
+    ``projectionMatrix.bin`` row.  Mode1 is the live example -- 1046 ``*.raw`` files
+    but ``noView=1020`` and an 85680-byte matrix (exactly 1020 x 84) -- so feeding the
+    SDK all 1046 makes it read 26 rows past the end of the geometry file and the
+    volume comes out with severe artifacts.
+
+    Every caller that builds a workspace must clamp to this count, never to
+    ``len(list(raw_dir.glob('*.raw')))``.  Routing both the batch pipeline and the
+    single-study rebuild through this one function is what keeps them agreeing.
+    """
+    declared = _read_no_view(Path(cfg_dir) / "fdkPara.xml")
+    return min(nviews, declared) if declared else nviews
+
+
 def build_full_workspace(
     raw_dir: str | Path,
     cfg_dir: str | Path,
@@ -777,8 +795,7 @@ def reconstruct_study(
     # The SDK consumes only the prefix declared by fdkPara noView.  Mode1 has 1046 files
     # but exactly 1020 valid image/matrix rows; all full and subset workspaces must use
     # that same effective count.
-    declared_no_view = _read_no_view(study.cfg_dir / "fdkPara.xml")
-    source_no_view = min(study.nviews, declared_no_view) if declared_no_view else study.nviews
+    source_no_view = effective_view_count(study.nviews, study.cfg_dir)
     per_view, per_view_warnings = validated_per_view(
         study.cfg_dir, source_no_view, options.per_view_files.get(study.mode, {})
     )

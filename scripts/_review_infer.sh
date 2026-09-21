@@ -45,6 +45,7 @@ SHAPES=(
 
 for entry in "${SHAPES[@]}"; do
   IFS='|' read -r idx group shape <<< "$entry"
+  if [ -n "$ONLY" ] && [[ " $ONLY " != *" $idx "* ]]; then continue; fi
   set -- $shape                       # z y x
   BASE="volume_${3}X${2}X${1}_f32"
   DIR=$(ls -d "$OUTROOT/c${idx}_"* 2>/dev/null | head -1)

@@ -72,6 +72,7 @@ from cbct_n2n.reconstruction.variants import (
     _MODE_NAME,
     _parse_kv_ma,
     _raw_file_count,
+    effective_view_count,
 )
 
 DEFAULT_SOURCE_ROOT = r"\\192.168.36.235\团队文件-牙科ct\data_raw\PDL"
@@ -247,6 +248,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"case       : {study.case_id}")
     print(f"study      : {study.study_uid}")
     print(f"mode       : {study.mode}  {study.kv} kV / {study.ma} mA / {study.nviews} views")
+    # The raw directory can hold more frames than the config's noView declares (Mode1:
+    # 1046 files vs noView=1020 + an 85680-byte projectionMatrix.bin = 1020 x 84).  The
+    # SDK consumes only the declared prefix, so the workspace must be clamped to it --
+    # see cbct_n2n.reconstruction.variants.effective_view_count.  Passing study.nviews
+    # here rewrote noView to the raw count and the extra 26 frames were reconstructed
+    # against geometry that does not exist, which is what produced the Mode1 artifacts.
+    effective_views = effective_view_count(study.nviews, study.cfg_dir)
+    if effective_views != study.nviews:
+        print(f"views used : {effective_views} of {study.nviews} raw frames "
+              f"(fdkPara noView is the authority; the remaining "
+              f"{study.nviews - effective_views} have no valid image/matrix row)")
     print(f"raw dir    : {study.raw_dir}")
     print(f"cfg dir    : {study.cfg_dir}")
     print(f"group      : {group.name}  fdk_para={group.fdk_para}")
@@ -259,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         full_raw, full_cfg = build_full_workspace(
             study.raw_dir, study.cfg_dir, workspace / "full", "copy",
-            max_views=study.nviews,
+            max_views=effective_views,
         )
         changed = apply_fdk_para(full_cfg, group.fdk_para)
         replaced = apply_filter_file(full_cfg, filter_path)
