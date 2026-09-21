@@ -8,10 +8,16 @@
 #   volume_640X640X360_f32.raw -> volume_640X640X360_f32_ai_r1b.raw ... _ai_r4b.raw
 #
 # Idempotent: denoise_multi_models.py skips an existing <stem><sep><model>.raw.
+#
+# ONLY="02 03" limits the run to those case indices (default: all).  A cached case is
+# cheap to re-scan but still re-reads the volumes, so the filter saves real time when
+# only one reconstruction changed.
 set -u
 export PATH="/usr/bin:/bin:$PATH"
 export PYTHONIOENCODING=utf-8
 export KMP_DUPLICATE_LIB_OK=TRUE
+
+ONLY="${ONLY:-}"
 
 PY=/c/Users/admin/anaconda3/envs/torch/python.exe
 REPO=/g/workspace/N2N

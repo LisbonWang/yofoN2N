@@ -351,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
             "kv": study.kv,
             "ma": study.ma,
             "nviews": study.nviews,
+            "effective_views": effective_views,
             "raw_dir": str(study.raw_dir),
             "cfg_dir": str(study.cfg_dir),
             "fdk_para": dict(group.fdk_para),

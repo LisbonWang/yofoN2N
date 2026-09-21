@@ -3,17 +3,23 @@
 #
 # strength 0.3, wiener mode, r=2, eps-k=8, sigma taken from the auto-picked flat
 # ROI of each volume (the calibrated option: the whole-tissue Immerkaer sigma
-# overestimates the noise floor ~3.2x and would make k meaningless).
-# Bone gain is ~94% x strength (measured linearity), so s=0.3 -> about +28% bone
-# contrast at a flat-region noise gain of 1 + 0.3/(1+64) ~= 1.005.
+# overestimates the noise floor 1.31-5.29x depending on the case and would make k
+# meaningless).  Bone gain is ~94% x strength (measured linearity), so s=0.3 ->
+# about +28% bone contrast at a flat-region noise gain of 1 + 0.3/(1+64) ~= 1.005.
 #
 # Case folders stay raw-only: figures / json / markdown of this step go to _logs/.
 #
 # Names (flat, one extension): in  volume_<X>X<Y>X<Z>_f32_ai_r4b.raw
 #                              out volume_<X>X<Y>X<Z>_f32_ai_r4b_sharp.raw
+#
+# Re-runs unconditionally (guided_sharpen_volume.py has no cache check), so use
+# ONLY="02 03" to redo a subset instead of sharpening all nine again.
 set -u
 export PATH="/usr/bin:/bin:$PATH"
 export PYTHONIOENCODING=utf-8
+
+# Space-separated case indices to run; empty = every case.
+ONLY="${ONLY:-}"
 
 PY=/c/Users/admin/anaconda3/envs/torch/python.exe
 REPO=/g/workspace/N2N

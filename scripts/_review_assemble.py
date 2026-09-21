@@ -259,7 +259,8 @@ def main() -> int:
                 entry.setdefault("recon_sidecar", {})[key] = {
                     k: data.get(k) for k in
                     ("output", "md5", "shape", "spacing_zyx", "case_id", "study_uid",
-                     "mode", "group", "kv", "ma", "nviews", "raw_dir", "cfg_dir",
+                     "mode", "group", "kv", "ma", "nviews", "effective_views",
+                     "raw_dir", "cfg_dir",
                      "fdk_para", "filter_file", "filter_file_md5", "post_procs",
                      "pwls", "seconds", "volume_min", "volume_max", "volume_mean",
                      "volume_std")
@@ -304,6 +305,7 @@ def main() -> int:
             "source": entry.get("recon_sidecar", {}).get("input", {}).get("raw_dir"),
             "study_uid": entry.get("recon_sidecar", {}).get("input", {}).get("study_uid"),
             "nviews": entry.get("recon_sidecar", {}).get("input", {}).get("nviews"),
+            "effective_views": entry.get("recon_sidecar", {}).get("input", {}).get("effective_views"),
             "sharpening_measured": sharp_meas,
             "band_mask_n_voxels": entry["band_mask_n_voxels"],
         })
