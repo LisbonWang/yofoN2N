@@ -18,6 +18,8 @@ import pytest
 from scripts._review_assemble import (
     BYTES_TO_SHAPE,
     NAME_SUFFIXES,
+    SHARPEN_ARTEFACTS,
+    SHARPENED_INPUTS,
     dims_tag,
     vol_names,
 )
@@ -51,6 +53,7 @@ def test_vol_names_are_flat_with_one_extension(shape, dims):
         f"volume_{dims}_f32_ai_r3b.raw",
         f"volume_{dims}_f32_ai_r4b.raw",
         f"volume_{dims}_f32_ai_r4b_sharp.raw",
+        f"volume_{dims}_f32_ai_r3b_sharp.raw",
     ]
 
 
@@ -74,7 +77,17 @@ def test_vol_names_have_no_dot_before_the_ai_tag():
 
 def test_vol_names_keys_match_the_suffix_table():
     assert [k for _, k, _ in vol_names(VOL600)] == [k for _, k, _ in NAME_SUFFIXES]
-    assert len(vol_names(VOL600)) == 7
+    assert len(vol_names(VOL600)) == 8
+
+
+def test_every_sharpened_volume_has_a_plain_source_to_sharpen():
+    """_ai_r{3,4}b_sharp must each point at a volume that also exists."""
+    keys = {k for _, k, _ in vol_names(VOL600)}
+    for out_key, suffix in SHARPENED_INPUTS.items():
+        assert out_key in keys, out_key
+        assert "sharp" not in suffix, suffix
+        assert f"{suffix[1:]}" in keys, suffix          # "_ai_r4b" -> "ai_r4b"
+    assert set(SHARPEN_ARTEFACTS) == set(SHARPENED_INPUTS)
 
 
 def test_bytes_to_shape_covers_both_geometries():
@@ -105,7 +118,7 @@ def test_rename_rules_never_leave_a_bare_stem():
 
 def test_rename_rules_cover_every_volume_plus_both_sidecars():
     rules = dict(rename_rules("640X640X600"))
-    assert len(rules) == 9                                   # 7 volumes + 2 sidecars
+    assert len(rules) == 10                                  # 8 volumes + 2 sidecars
     assert rules["input.bhc.marfi.rcoor.raw"] == "volume_640X640X600_f32.raw"
     assert rules["input.bhc.marfi.rcoor.raw.json"] == "volume_640X640X600_f32.raw.json"
     assert rules["input.bhc.marfi.rcoor.conv.rn_ani.raw"] == \
@@ -114,6 +127,8 @@ def test_rename_rules_cover_every_volume_plus_both_sidecars():
         "volume_640X640X600_f32_traditional.raw.json"
     assert rules["input.bhc.marfi.rcoor.ai.r4b.gfsharp_s0.3.raw"] == \
         "volume_640X640X600_f32_ai_r4b_sharp.raw"
+    assert rules["input.bhc.marfi.rcoor.ai.r3b.gfsharp_s0.3.raw"] == \
+        "volume_640X640X600_f32_ai_r3b_sharp.raw"
 
 
 def test_rename_rules_apply_without_prefix_corruption():
@@ -121,13 +136,15 @@ def test_rename_rules_apply_without_prefix_corruption():
     blob = ('{"a": "input.bhc.marfi.rcoor.raw", '
             '"b": "input.bhc.marfi.rcoor.raw.json", '
             '"c": "input.bhc.marfi.rcoor.ai.r4b.gfsharp_s0.3.raw", '
-            '"d": "input.bhc.marfi.rcoor.ai.r4b.raw"}')
+            '"d": "input.bhc.marfi.rcoor.ai.r4b.raw", '
+            '"e": "input.bhc.marfi.rcoor.ai.r3b.gfsharp_s0.3.raw"}')
     for old, new in rename_rules("640X640X360"):
         blob = blob.replace(old, new)
     assert '"a": "volume_640X640X360_f32.raw"' in blob
     assert '"b": "volume_640X640X360_f32.raw.json"' in blob
     assert '"c": "volume_640X640X360_f32_ai_r4b_sharp.raw"' in blob
     assert '"d": "volume_640X640X360_f32_ai_r4b.raw"' in blob
+    assert '"e": "volume_640X640X360_f32_ai_r3b_sharp.raw"' in blob
     # no double extensions, no leftovers, no mixed-up tags
     assert ".raw.raw" not in blob
     assert "input.bhc" not in blob

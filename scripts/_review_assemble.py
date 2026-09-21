@@ -49,7 +49,17 @@ NAME_SUFFIXES = [
     ("_ai_r3b", "ai_r3b", "AI r3 轮（激进档）"),
     ("_ai_r4b", "ai_r4b", "AI r4 轮（存档档）"),
     ("_ai_r4b_sharp", "ai_r4b_sharp", "r4 轮 + 0.3 力度引导滤波锐化"),
+    ("_ai_r3b_sharp", "ai_r3b_sharp", "r3 轮 + 0.3 力度引导滤波锐化"),
 ]
+
+# Sharpened volumes and the artefact bundle phase 3 leaves in _logs/gfsharp/<cNN>/.
+# The r4b pair keeps its original chart stem so the first build's artefacts stay
+# where they were.
+SHARPEN_ARTEFACTS = {
+    "ai_r4b_sharp": "gfsharp_s0.3.json",
+    "ai_r3b_sharp": "gfsharp_r3b_s0.3.json",
+}
+SHARPENED_INPUTS = {"ai_r4b_sharp": "_ai_r4b", "ai_r3b_sharp": "_ai_r3b"}
 
 
 def dims_tag(shape: tuple[int, int, int]) -> str:
@@ -205,11 +215,18 @@ def main() -> int:
         },
         "sharpening": {
             "method": "3D guided filter, wiener mode",
-            "radius": 2, "eps_k": 8.0, "sigma_source": "flat ROI (per volume)",
+            "radius": 2, "eps_k": 8.0, "sigma_source": "flat",
+            "sigma_note": "the flat ROI is auto-picked from the volume being sharpened, so "
+                          "before/after within one row are identical voxels; absolute sigma is "
+                          "not comparable across volumes (project-wide Immerkaer rule)",
             "strength": 0.3,
-            "applied_to": "each case's <base>_ai_r4b.raw",
-            "expected_effect": "bone-region sigma gain ~= 94% x strength ~= +28%; "
-                               "flat-region noise gain ~= 1 + s/(1+k^2) ~= 1.005",
+            "applied_to": {out_tag: f"each case's <base>{suffix}.raw"
+                           for out_tag, suffix in SHARPENED_INPUTS.items()},
+            "applied_to_note": "eps follows the noise floor of the volume being sharpened, so "
+                               "the lighter-smoothed r3b gets a slightly larger eps than r4b at "
+                               "the same strength; <base> = volume_<X>X<Y>X<Z>_f32",
+            "expected_effect": "bone-region sigma gain ~= 0.9 x strength (measured 1.25-1.28x at "
+                               "s=0.3); flat-region noise gain ~= 1 + s/(1+k^2) ~= 1.005",
         },
         "naming": {
             "pattern": NAME_PATTERN,
@@ -229,6 +246,7 @@ def main() -> int:
         entry = {"dir": d.name, "path": str(d), "files": {}, "missing": []}
         shape = infer_case_shape(d)
         order = vol_names(shape)
+        vol_base = f"volume_{dims_tag(shape)}_f32"
         entry["naming"] = {"pattern": NAME_PATTERN, "dims": dims_tag(shape)}
         input_path = d / order[0][0]
         if not input_path.is_file():
@@ -269,23 +287,34 @@ def main() -> int:
         mi = d / "metrics_ai.json"
         if mi.is_file():
             entry["metrics_ai"] = json.loads(mi.read_text(encoding="utf-8"))
-        gj = root / "_logs" / "gfsharp" / d.name.split("_")[0] / "gfsharp_s0.3.json"
-        sharp_meas = None
-        if gj.is_file():
-            entry["sharpening"] = json.loads(gj.read_text(encoding="utf-8"))
-            mm = entry["sharpening"]["metrics"]
+        # Sharpening artefacts: one bundle per sharpened target, keyed by the
+        # output suffix so the report can line r3b_sharp up next to r4b_sharp.
+        sharp_meas: dict[str, dict] = {}
+        for key, stem in SHARPEN_ARTEFACTS.items():
+            gj = root / "_logs" / "gfsharp" / d.name.split("_")[0] / stem
+            if not gj.is_file():
+                continue
+            bundle = json.loads(gj.read_text(encoding="utf-8"))
+            entry.setdefault("sharpening", {})[key] = bundle
+            mm = bundle["metrics"]
             pl, sh = mm["plain"], mm["sharp"]
-            sharp_meas = {
+            sharp_meas[key] = {
+                "input": f"{vol_base}{SHARPENED_INPUTS[key]}.raw",
                 "flat_sigma_before": pl["flat_patch_sigma"],
                 "flat_sigma_after": sh["flat_patch_sigma"],
                 "flat_gain": sh["flat_patch_sigma"] / pl["flat_patch_sigma"],
                 "bone_sigma_before": pl["bone_patch_sigma"],
                 "bone_sigma_after": sh["bone_patch_sigma"],
                 "bone_gain": sh["bone_patch_sigma"] / pl["bone_patch_sigma"],
-                "sigma_used_for_eps": entry["sharpening"]["sigma_for_eps"],
-                "sigma_source": entry["sharpening"]["sigma_source"],
-                "eps": entry["sharpening"]["eps"],
+                "band_hi_lo_before": pl["band_differentiation_high_over_low"],
+                "band_hi_lo_after": sh["band_differentiation_high_over_low"],
+                "roi_flat_zyx": [bundle["rois"]["flat"][a] for a in ("z", "y", "x")],
+                "roi_bone_zyx": [bundle["rois"]["bone"][a] for a in ("z", "y", "x")],
+                "sigma_used_for_eps": bundle["sigma_for_eps"],
+                "sigma_source": bundle["sigma_source"],
+                "eps": bundle["eps"],
             }
+        sharp_meas = sharp_meas or None
 
         (d / "case.json").write_text(
             json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -346,7 +375,8 @@ def render_readme(manifest: dict) -> str:
         "9 例全部取自**跨模式独立测试集** `splits_cross_mode_test11.json`（未参与任何训练/验证）："
         "Mode0_1615 ×1、Mode1_1615 ×2、Mode2_1609 ×3、Mode3_1609 ×3。\n"
     )
-    out.append("每个 `cNN_<组>__<病例>__<uid尾段>/` 子文件夹里是**同一例的 7 卷体数据**，"
+    out.append(f"每个 `cNN_<组>__<病例>__<uid尾段>/` 子文件夹里是**同一例的 "
+               f"{manifest.get('naming', {}).get('volumes_per_case', 8)} 卷体数据**，"
                "headerless `float32` 小端（`<f4`）。\n")
     out.append(f"命名规则：`{NAME_PATTERN}`。`X/Y/Z` 取自 `fdkPara` 的 "
                "`xNum/yNum/zNum`（所以**层数在最后**）；下表的「后缀」拼在 `_f32` 之后。\n")
@@ -365,8 +395,10 @@ def render_readme(manifest: dict) -> str:
     out.append("")
     out.append("示例（1609 组）：`volume_640X640X360_f32.raw`、"
                "`volume_640X640X360_f32_ai_r1b.raw`、"
+               "`volume_640X640X360_f32_ai_r3b_sharp.raw`、"
                "`volume_640X640X360_f32_ai_r4b_sharp.raw`。\n")
-    out.append("AI 处理过的四卷都带 `_ai_` 标识。`*.raw.json` 是重建溯源 sidecar，"
+    out.append("AI 处理过的五卷都带 `_ai_` 标识；其中 `_ai_r3b_sharp` / `_ai_r4b_sharp` "
+               "是两轮输出的 **0.3 力度引导滤波锐化**版本。`*.raw.json` 是重建溯源 sidecar，"
                "`case.json` 是本案汇总（尺寸、md5、σ、模型哈希）。\n")
     out.append("> 用阅片工具打开过体数据后，夹里可能多出 80 字节的 `<卷名>.json`"
                "（内容是 `{imageType,xLen,yLen,zLen}` 的固定模板，不是本包产物）。"
@@ -403,44 +435,56 @@ def render_readme(manifest: dict) -> str:
 
     sh = manifest["sharpening"]
     out.append("## 引导滤波锐化\n")
-    out.append(f"- 施加对象：每例的 `<base>_ai_r4b.raw`（`<base> = volume_<X>X<Y>X<Z>_f32`）；"
-               f"方法 `{sh['method']}`，"
-               f"`radius={sh['radius']}`、`eps_k={sh['eps_k']}`、"
-               f"σ 取自**该卷平坦 ROI 实测值**（`--sigma-source {sh['sigma_source']}`）、"
-               f"`strength={sh['strength']}`")
+    out.append("对**两轮输出**各做一次同样参数的锐化（`<base> = volume_<X>X<Y>X<Z>_f32`）：\n")
+    out.append("| 输入 | 输出 |")
+    out.append("| --- | --- |")
+    for out_tag in sorted(sh["applied_to"]):
+        out.append(f"| `<base>{SHARPENED_INPUTS[out_tag]}.raw` | `<base>_{out_tag}.raw` |")
+    out.append("")
+    out.append(f"方法 `{sh['method']}`、`radius={sh['radius']}`、`eps_k={sh['eps_k']}`、"
+               f"`strength={sh['strength']}`、`--sigma-source {sh['sigma_source']}`"
+               "（σ 取该卷平坦 ROI 实测值）。")
+    if sh.get("applied_to_note"):
+        out.append(f"- {sh['applied_to_note']}。")
+    if sh.get("sigma_note"):
+        out.append(f"- {sh['sigma_note']}。")
     out.append(f"- 设计预期：{sh['expected_effect']}"
                "（strength 在本项目实测为严格线性，只改幅度不改性质）\n")
-    meas = [c["sharpening_measured"] for c in manifest["cases"] if c.get("sharpening_measured")]
-    if meas:
-        fg = [m["flat_gain"] for m in meas]
-        bg = [m["bone_gain"] for m in meas]
-        out.append(f"**实测（9 例，同一套 ROI 前后对比）**：骨小梁 ROI σ 增益 "
-                   f"**{min(bg):.3f}–{max(bg):.3f}×**（均值 {sum(bg)/len(bg):.3f}×，"
-                   f"≈ +{(sum(bg)/len(bg)-1)*100:.0f}%），与 `94% × strength` 的经验式一致；"
-                   f"可证平坦 ROI 的噪声增益仅 {min(fg):.3f}–{max(fg):.3f}×"
-                   f"（均值 {sum(fg)/len(fg):.3f}×）。\n")
-        out.append("| 例 | σ_flat 前 → 后 | 增益 | σ_bone 前 → 后 | 增益 | eps 用的 σ |")
-        out.append("| --- | --- | --- | --- | --- | --- |")
-        for c in manifest["cases"]:
-            m = c.get("sharpening_measured")
-            if not m:
-                continue
-            out.append(f"| {c['index']} | {m['flat_sigma_before']:.6f} → {m['flat_sigma_after']:.6f} "
-                       f"| {m['flat_gain']:.3f}× | {m['bone_sigma_before']:.6f} → "
-                       f"{m['bone_sigma_after']:.6f} | {m['bone_gain']:.3f}× "
-                       f"| {m['sigma_used_for_eps']:.6f} |")
+    for tag in sorted(SHARPEN_ARTEFACTS):
+        rows = [(c["index"], c["sharpening_measured"][tag]) for c in manifest["cases"]
+                if (c.get("sharpening_measured") or {}).get(tag)]
+        if not rows:
+            continue
+        fg = [m["flat_gain"] for _, m in rows]
+        bg = [m["bone_gain"] for _, m in rows]
+        out.append(f"### `_{tag}` —— 实测（{len(rows)} 例，每行内部前后同一套 ROI）\n")
+        out.append(f"骨小梁 ROI σ 增益 **{min(bg):.3f}–{max(bg):.3f}×**"
+                   f"（均值 {sum(bg)/len(bg):.3f}×，≈ +{(sum(bg)/len(bg)-1)*100:.0f}%），"
+                   f"与 `≈0.9 × strength` 的经验式同量级；可证平坦 ROI 的噪声增益仅 "
+                   f"{min(fg):.3f}–{max(fg):.3f}×（均值 {sum(fg)/len(fg):.3f}×）。\n")
+        out.append("| 例 | 输入 | σ_flat 前 → 后 | 增益 | σ_bone 前 → 后 | 增益 | "
+                   "high/low 前 → 后 | eps 用的 σ |")
+        out.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        for idx, m in rows:
+            out.append(
+                f"| {idx} | `{m['input']}` | "
+                f"{m['flat_sigma_before']:.6f} → {m['flat_sigma_after']:.6f} | "
+                f"{m['flat_gain']:.3f}× | {m['bone_sigma_before']:.6f} → "
+                f"{m['bone_sigma_after']:.6f} | {m['bone_gain']:.3f}× | "
+                f"{m['band_hi_lo_before']:.3f} → {m['band_hi_lo_after']:.3f} | "
+                f"{m['sigma_used_for_eps']:.6f} |")
         out.append("")
-        out.append("eps 用的 σ 一律是**平坦 ROI 实测值**，不是全组织 Immerkaer σ。"
-                   "后者把骨结构也算进噪声：本包 9 例实测高 **1.31–5.29 倍**"
-                   "（如 c01 `sigma_tissue 0.003658` vs `sigma_flat 0.001906`，"
-                   "c07 `0.003451` vs `0.000653`），换过去会让同一个 `k` 的实际强度整个改变。\n")
+    out.append("eps 用的 σ 一律是**平坦 ROI 实测值**，不是全组织 Immerkaer σ。"
+               "后者把骨结构也算进噪声：本包 9 例实测高 **1.31–5.29 倍**"
+               "（如 c01 `sigma_tissue 0.003658` vs `sigma_flat 0.001906`，"
+               "c07 `0.003451` vs `0.000653`），换过去会让同一个 `k` 的实际强度整个改变。\n")
 
     out.append("## 实测指标（Immerkaer σ，tissue>0.01，lo/hi=0.2/0.4）\n")
     out.append("**每例的分带掩码统一取自该例的输入卷**（不是各卷各算）——"
                "对每个版本各自重算阈值会自选择地改变体素集合，报出不可比的数字。\n")
     out.append("| 例 | 组 | 病例 | 输入 σ | 传统降噪 σ | AI r1 σ | AI r2 σ | AI r3 σ | AI r4 σ "
-               "| r4+锐化0.3 σ | 输入 diff | 传统 diff | r1 diff | r4 diff |")
-    out.append("| --- | --- | --- | " + " --- |" * 11)
+               "| r3+锐化0.3 σ | r4+锐化0.3 σ | 输入 diff | 传统 diff | r1 diff | r4 diff |")
+    out.append("| --- | --- | --- | " + " --- |" * 12)
     for c in manifest["cases"]:
         sig = c["sigma"]
         bd = c["band_diff"]
@@ -452,7 +496,8 @@ def render_readme(manifest: dict) -> str:
             f"| {c['index']} | {c['group']} | {c['case_id']} | "
             f"{g(sig, 'input'):.5f} | {g(sig, 'conventional'):.5f} | "
             f"{g(sig, 'ai_r1b'):.5f} | {g(sig, 'ai_r2b'):.5f} | {g(sig, 'ai_r3b'):.5f} | "
-            f"{g(sig, 'ai_r4b'):.5f} | {g(sig, 'ai_r4b_sharp'):.5f} | "
+            f"{g(sig, 'ai_r4b'):.5f} | {g(sig, 'ai_r3b_sharp'):.5f} | "
+            f"{g(sig, 'ai_r4b_sharp'):.5f} | "
             f"{g(bd, 'input'):.3f} | {g(bd, 'conventional'):.3f} | "
             f"{g(bd, 'ai_r1b'):.3f} | {g(bd, 'ai_r4b'):.3f} |")
     out.append("")

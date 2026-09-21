@@ -57,6 +57,7 @@ LEGACY = {
     "ai.r3b.raw": "_ai_r3b",
     "ai.r4b.raw": "_ai_r4b",
     "ai.r4b.gfsharp_s0.3.raw": "_ai_r4b_sharp",
+    "ai.r3b.gfsharp_s0.3.raw": "_ai_r3b_sharp",
 }
 
 # Text-only rules for identifiers that are not file paths: the model keys that
