@@ -14,7 +14,9 @@ fusion), and writes the results side by side as::
 
 e.g. ``full.bhc.raw`` -> ``full.bhc.r0.raw``, ``full.bhc.r1b.raw``, ...
 
-so a viewer can flip between them by suffix alone.
+so a viewer can flip between them by suffix alone.  ``--suffix-sep`` switches the
+join to another character (``--suffix-sep _`` gives ``volume_640X640X360_f32_ai_r1b.raw``)
+for delivery folders where a flat, single-extension name reads better.
 
 It also attaches the numbers that drive the delivery decision: the
 density-banded Immerkaer sigma of every output, keyed on one chosen model with
@@ -93,14 +95,21 @@ def parse_model_spec(spec: str) -> tuple[str, Path]:
     return name, Path(path)
 
 
-def output_path_for(input_path: Path, name: str, outdir: Path | None = None) -> Path:
+def output_path_for(input_path: Path, name: str, outdir: Path | None = None,
+                    sep: str = ".") -> Path:
     """``full.bhc.raw`` + ``r1b`` -> ``<dir>/full.bhc.r1b.raw``.
 
     ``Path.stem`` of ``full.bhc.raw`` is ``full.bhc``, so multi-dot domains keep
     their full logical name and only the model tag is appended.
+
+    ``sep`` is what joins the stem and the tag.  The default ``.`` matches the
+    historical ``<stem>.<model>.raw`` convention; pass ``"_"`` to get flat,
+    single-extension names such as ``volume_640X640X360_f32_ai_r1b.raw`` (the
+    review-package style, where the delivery folder should not be a forest of
+    dots).
     """
     directory = outdir if outdir is not None else input_path.parent
-    return directory / f"{input_path.stem}.{name}.raw"
+    return directory / f"{input_path.stem}{sep}{name}.raw"
 
 
 def expected_bytes(shape: tuple[int, int, int]) -> int:
@@ -148,6 +157,10 @@ def main() -> int:
                    metavar="NAME=PATH", help="Repeatable; order defines the report order.")
     p.add_argument("--outdir", type=Path, default=None,
                    help="Where to write outputs (default: alongside --input).")
+    p.add_argument("--suffix-sep", default=".",
+                   help="Separator between the input stem and the model tag "
+                        "(default '.' -> <stem>.<model>.raw; use '_' for "
+                        "<stem>_<model>.raw).")
     p.add_argument("--arch", default=None, choices=("unet2d", "unet2d_ds", "unet3d"),
                    help="Override model.arch from the config.")
     p.add_argument("--tiled", action="store_true", default=True,
@@ -184,6 +197,9 @@ def main() -> int:
     names = [n for n, _ in args.model]
     if len(set(names)) != len(names):
         raise SystemExit(f"duplicate --model names in {names}; outputs would collide")
+    if not args.suffix_sep or any(c in args.suffix_sep for c in "/\\"):
+        raise SystemExit(f"--suffix-sep must be a non-empty filename fragment, "
+                         f"got {args.suffix_sep!r}")
 
     config = load_config(args.config)
     arch = args.arch or str(config.get("model", {}).get("arch", "unet3d"))
@@ -216,7 +232,7 @@ def main() -> int:
     for name, ckpt in args.model:
         if not ckpt.exists():
             raise SystemExit(f"checkpoint not found for {name}: {ckpt}")
-        out_path = output_path_for(args.input, name, outdir)
+        out_path = output_path_for(args.input, name, outdir, args.suffix_sep)
         entry: dict[str, Any] = {
             "checkpoint": str(ckpt),
             "checkpoint_md5": file_md5(ckpt),

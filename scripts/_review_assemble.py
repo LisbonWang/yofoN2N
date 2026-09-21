@@ -34,19 +34,34 @@ from cbct_n2n.training.metrics import band_noise_std_immerkaer, estimate_noise_s
 DTYPE = np.dtype("<f4")
 TISSUE_FLOOR = 0.01
 SHAPES = {600: (600, 640, 640), 360: (360, 640, 640), 640: (640, 640, 640)}
+BYTES_TO_SHAPE = {z * 640 * 640 * 4: shape for z, shape in SHAPES.items()}
 
-STEM = "input.bhc.marfi.rcoor"
-ORDER = [
-    (f"{STEM}.raw", "input", "AI 输入：PWLS 0.01 + BHC + RCoor + MARFI"),
-    (f"{STEM}.conv.rn_ani.raw", "conventional",
+# Delivery names are flattened to one extension: "volume_640X640X360_f32_ai_r1b.raw"
+# rather than a forest of dots.  X/Y/Z follow fdkPara (xNum/yNum/zNum), so the
+# slice count comes last.
+NAME_PATTERN = "volume_<X>X<Y>X<Z>_f32[_后缀].raw"
+NAME_SUFFIXES = [
+    ("", "input", "AI 输入：PWLS 0.01 + BHC + RCoor + MARFI"),
+    ("_traditional", "conventional",
      "传统降噪对照：同链 + ReduceNoise + Anisotropic"),
-    (f"{STEM}.ai.r1b.raw", "ai_r1b", "AI r1 轮（轻量档）"),
-    (f"{STEM}.ai.r2b.raw", "ai_r2b", "AI r2 轮（重量档）"),
-    (f"{STEM}.ai.r3b.raw", "ai_r3b", "AI r3 轮（激进档）"),
-    (f"{STEM}.ai.r4b.raw", "ai_r4b", "AI r4 轮（存档档）"),
-    (f"{STEM}.ai.r4b.gfsharp_s0.3.raw", "ai_r4b_gfsharp_s0.3",
-     "r4 轮 + 0.3 力度引导滤波锐化"),
+    ("_ai_r1b", "ai_r1b", "AI r1 轮（轻量档）"),
+    ("_ai_r2b", "ai_r2b", "AI r2 轮（重量档）"),
+    ("_ai_r3b", "ai_r3b", "AI r3 轮（激进档）"),
+    ("_ai_r4b", "ai_r4b", "AI r4 轮（存档档）"),
+    ("_ai_r4b_sharp", "ai_r4b_sharp", "r4 轮 + 0.3 力度引导滤波锐化"),
 ]
+
+
+def dims_tag(shape: tuple[int, int, int]) -> str:
+    """``(360, 640, 640)`` (z, y, x) -> ``"640X640X360"`` (x X y X z)."""
+    z, y, x = shape
+    return f"{x}X{y}X{z}"
+
+
+def vol_names(shape: tuple[int, int, int]) -> list[tuple[str, str, str]]:
+    """``(filename, key, description)`` for the seven volumes of one case."""
+    base = f"volume_{dims_tag(shape)}_f32"
+    return [(f"{base}{suffix}.raw", key, desc) for suffix, key, desc in NAME_SUFFIXES]
 
 
 def md5_of(path: Path, chunk: int = 1 << 22) -> str:
@@ -59,10 +74,33 @@ def md5_of(path: Path, chunk: int = 1 << 22) -> str:
 
 def infer_shape(path: Path) -> tuple[int, int, int]:
     n = path.stat().st_size
-    for z, shape in SHAPES.items():
-        if n == z * 640 * 640 * 4:
-            return shape
-    raise ValueError(f"{path.name}: {n} B matches no known shape")
+    shape = BYTES_TO_SHAPE.get(n)
+    if shape is None:
+        raise ValueError(f"{path.name}: {n} B matches no known shape")
+    return shape
+
+
+def infer_case_shape(directory: Path) -> tuple[int, int, int]:
+    """Geometry of a case folder, from whichever volumes are already there.
+
+    The file name itself depends on the shape, so the shape cannot be read off
+    the name without knowing it first; the byte size is the one fact available
+    before anything else.  All volumes in a folder must agree.
+    """
+    raws = sorted(directory.glob("*.raw"))
+    if not raws:
+        raise SystemExit(f"{directory.name}: no .raw volumes; "
+                         "run scripts/_review_recon.sh first")
+    shapes = set()
+    for f in raws:
+        shape = BYTES_TO_SHAPE.get(f.stat().st_size)
+        if shape is None:
+            raise SystemExit(f"{directory.name}/{f.name}: "
+                             f"{f.stat().st_size} B matches no known shape")
+        shapes.add(shape)
+    if len(shapes) > 1:
+        raise SystemExit(f"{directory.name}: mixed geometry {sorted(shapes)}")
+    return shapes.pop()
 
 
 def case_masks(input_volume: np.ndarray) -> dict[str, np.ndarray]:
@@ -169,9 +207,19 @@ def main() -> int:
             "method": "3D guided filter, wiener mode",
             "radius": 2, "eps_k": 8.0, "sigma_source": "flat ROI (per volume)",
             "strength": 0.3,
-            "applied_to": f"{STEM}.ai.r4b.raw",
+            "applied_to": "each case's <base>_ai_r4b.raw",
             "expected_effect": "bone-region sigma gain ~= 94% x strength ~= +28%; "
                                "flat-region noise gain ~= 1 + s/(1+k^2) ~= 1.005",
+        },
+        "naming": {
+            "pattern": NAME_PATTERN,
+            "note": "X/Y/Z are fdkPara xNum/yNum/zNum, so the slice count comes last; "
+                    "every volume is headerless float32 little-endian (<f4)",
+            "dims_by_group": {g: dims_tag(s) for g, s in (
+                ("Mode0_1615", (600, 640, 640)), ("Mode1_1615", (600, 640, 640)),
+                ("Mode2_1609", (360, 640, 640)), ("Mode3_1609", (360, 640, 640)))},
+            "suffixes": {(suffix or "(无后缀)"): desc for suffix, _, desc in NAME_SUFFIXES},
+            "volumes_per_case": len(NAME_SUFFIXES),
         },
         "cases": [],
     }
@@ -179,16 +227,18 @@ def main() -> int:
     rows = []
     for d in dirs:
         entry = {"dir": d.name, "path": str(d), "files": {}, "missing": []}
-        input_path = d / ORDER[0][0]
+        shape = infer_case_shape(d)
+        order = vol_names(shape)
+        entry["naming"] = {"pattern": NAME_PATTERN, "dims": dims_tag(shape)}
+        input_path = d / order[0][0]
         if not input_path.is_file():
-            raise SystemExit(f"{d.name}: AI input missing ({ORDER[0][0]}); "
+            raise SystemExit(f"{d.name}: AI input missing ({order[0][0]}); "
                              "run scripts/_review_recon.sh first")
-        shape = infer_shape(input_path)
         masks = case_masks(np.asarray(np.memmap(input_path, dtype=DTYPE, mode="r",
                                                 shape=shape)))
-        entry["band_masks_from"] = ORDER[0][0]
+        entry["band_masks_from"] = order[0][0]
         entry["band_mask_n_voxels"] = {b: int(np.count_nonzero(m)) for b, m in masks.items()}
-        for fname, key, desc in ORDER:
+        for fname, key, desc in order:
             f = d / fname
             if not f.is_file():
                 entry["missing"].append(fname)
@@ -202,9 +252,8 @@ def main() -> int:
                   f"diff={rec['band_differentiation_high_over_low']:.3f}", flush=True)
 
         # reconstruction sidecars (written by recon_conventional_denoise.py)
-        for key, fname in (("input", f"{STEM}.raw.json"),
-                           ("conventional", f"{STEM}.conv.rn_ani.raw.json")):
-            sc = d / fname
+        for key, stem in (("input", order[0][0]), ("conventional", order[1][0])):
+            sc = d / f"{stem}.json"
             if sc.is_file():
                 data = json.loads(sc.read_text(encoding="utf-8"))
                 entry.setdefault("recon_sidecar", {})[key] = {
@@ -296,18 +345,26 @@ def render_readme(manifest: dict) -> str:
         "Mode0_1615 ×1、Mode1_1615 ×2、Mode2_1609 ×3、Mode3_1609 ×3。\n"
     )
     out.append("每个 `cNN_<组>__<病例>__<uid尾段>/` 子文件夹里是**同一例的 7 卷体数据**，"
-               "除注明外均为 headerless `float32` 小端（`<f4`），几何见下表：\n")
-    out.append("| 文件 | 内容 |")
+               "headerless `float32` 小端（`<f4`）。\n")
+    out.append(f"命名规则：`{NAME_PATTERN}`。`X/Y/Z` 取自 `fdkPara` 的 "
+               "`xNum/yNum/zNum`（所以**层数在最后**）；下表的「后缀」拼在 `_f32` 之后。\n")
+    out.append("| 组 | 尺寸段 |")
     out.append("| --- | --- |")
-    out.append(f"| `{STEM}.raw` | **AI 输入**：PWLS 0.01 + BHC + RCoor + MARFI |")
-    out.append(f"| `{STEM}.ai.r1b.raw` | AI 第 1 轮（轻量 / 密度自适应档） |")
-    out.append(f"| `{STEM}.ai.r2b.raw` | AI 第 2 轮（重量档） |")
-    out.append(f"| `{STEM}.ai.r3b.raw` | AI 第 3 轮（激进档） |")
-    out.append(f"| `{STEM}.ai.r4b.raw` | AI 第 4 轮（存档档） |")
-    out.append(f"| `{STEM}.ai.r4b.gfsharp_s0.3.raw` | r4 轮输出 + **0.3 力度**引导滤波锐化 |")
-    out.append(f"| `{STEM}.conv.rn_ani.raw` | **传统降噪对照**：同链 + ReduceNoise + Anisotropic |")
+    dims = manifest.get("naming", {}).get("dims_by_group", {})
+    for gname in ("Mode0_1615", "Mode1_1615", "Mode2_1609", "Mode3_1609"):
+        if gname in dims:
+            out.append(f"| {gname} | `{dims[gname]}` |")
     out.append("")
-    out.append("AI 处理的四卷均带 `.ai.` 标识。`*.raw.json` 是重建溯源 sidecar，"
+    out.append("| 后缀 | 内容 |")
+    out.append("| --- | --- |")
+    for suffix, key, desc in NAME_SUFFIXES:
+        shown = suffix if suffix else "(无后缀)"
+        out.append(f"| `{shown}` | {desc} |")
+    out.append("")
+    out.append("示例（1609 组）：`volume_640X640X360_f32.raw`、"
+               "`volume_640X640X360_f32_ai_r1b.raw`、"
+               "`volume_640X640X360_f32_ai_r4b_sharp.raw`。\n")
+    out.append("AI 处理过的四卷都带 `_ai_` 标识。`*.raw.json` 是重建溯源 sidecar，"
                "`case.json` 是本案汇总（尺寸、md5、σ、模型哈希）。\n")
 
     out.append("## 重建参数（两条链的唯一差别是降噪模块）\n")
@@ -340,7 +397,8 @@ def render_readme(manifest: dict) -> str:
 
     sh = manifest["sharpening"]
     out.append("## 引导滤波锐化\n")
-    out.append(f"- 施加对象：`{sh['applied_to']}`；方法 `{sh['method']}`，"
+    out.append(f"- 施加对象：每例的 `<base>_ai_r4b.raw`（`<base> = volume_<X>X<Y>X<Z>_f32`）；"
+               f"方法 `{sh['method']}`，"
                f"`radius={sh['radius']}`、`eps_k={sh['eps_k']}`、"
                f"σ 取自**该卷平坦 ROI 实测值**（`--sigma-source {sh['sigma_source']}`）、"
                f"`strength={sh['strength']}`")
@@ -388,7 +446,7 @@ def render_readme(manifest: dict) -> str:
             f"| {c['index']} | {c['group']} | {c['case_id']} | "
             f"{g(sig, 'input'):.5f} | {g(sig, 'conventional'):.5f} | "
             f"{g(sig, 'ai_r1b'):.5f} | {g(sig, 'ai_r2b'):.5f} | {g(sig, 'ai_r3b'):.5f} | "
-            f"{g(sig, 'ai_r4b'):.5f} | {g(sig, 'ai_r4b_gfsharp_s0.3'):.5f} | "
+            f"{g(sig, 'ai_r4b'):.5f} | {g(sig, 'ai_r4b_sharp'):.5f} | "
             f"{g(bd, 'input'):.3f} | {g(bd, 'conventional'):.3f} | "
             f"{g(bd, 'ai_r1b'):.3f} | {g(bd, 'ai_r4b'):.3f} |")
     out.append("")

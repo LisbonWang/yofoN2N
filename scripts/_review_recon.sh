@@ -8,6 +8,9 @@
 # both with --pwls-scale 0.01 (beta = 0.01 x brightness mean) + the Hamming window
 # that the patch applies together with PWLS.
 #
+# Delivery names are flat, one extension: volume_<X>X<Y>X<Z>_f32.raw (chain A) and
+# volume_<X>X<Y>X<Z>_f32_traditional.raw (chain B), X/Y/Z = fdkPara xNum/yNum/zNum.
+#
 # Idempotent: recon_conventional_denoise.py skips an --out that already exists.
 set -u
 export PATH="/usr/bin:/bin:$PATH"
@@ -29,17 +32,17 @@ SOURCE_ROOT='//192.168.36.235/团队文件-牙科ct/data_raw/PDL'
 CHAIN_A="BHC RCoor MARFI"
 CHAIN_B="BHC ReduceNoise Anisotropic RCoor MARFI"
 
-# idx | group | case_id | study_uid | extra --filter-file (empty = group standard)
+# idx | group | case_id | study_uid | dims (XxYxZ) | extra --filter-file (empty = group standard)
 CASES=(
-"01|Mode0_1615|YPDL-25B-0006|1.2.156.89797079.788644816.1217986243.4033654926|$SOURCE_ROOT/YPDL-25B-0006/1.2.156.89797079.788644816.1217986243.4033654926/config/recon/PDI1313/Mode0/filter.xml"
-"02|Mode1_1615|YPDL-25B-0005|1.2.156.89797079.3354951403.1258185007.652073354|"
-"03|Mode1_1615|YPDL-26A-0026|1.2.826.0.1.3680043.2.461.16122501.776344465|"
-"04|Mode2_1609|YPDL-00A-0000|1.3.6.1.4.1.30071.8.53625245697634.8415609725064887.26|"
-"05|Mode2_1609|YPDL-26A-0009|1.2.156.89797079.2335316951.1203213444.1392639632|"
-"06|Mode2_1609|YPDL-26A-0027|1.2.156.89797079.1182197106.1232956091.447186561|"
-"07|Mode3_1609|YPDL-26A-0026|1.2.156.89797079.835519821.1189836059.1130746797|"
-"08|Mode3_1609|YPDL-26A-0026|1.2.826.0.1.3680043.2.461.16167459.1916027858|"
-"09|Mode3_1609|YPDL-26A-0026|1.2.826.0.1.3680043.2.461.16142894.3829726010|"
+"01|Mode0_1615|YPDL-25B-0006|1.2.156.89797079.788644816.1217986243.4033654926|640X640X600|$SOURCE_ROOT/YPDL-25B-0006/1.2.156.89797079.788644816.1217986243.4033654926/config/recon/PDI1313/Mode0/filter.xml"
+"02|Mode1_1615|YPDL-25B-0005|1.2.156.89797079.3354951403.1258185007.652073354|640X640X600|"
+"03|Mode1_1615|YPDL-26A-0026|1.2.826.0.1.3680043.2.461.16122501.776344465|640X640X600|"
+"04|Mode2_1609|YPDL-00A-0000|1.3.6.1.4.1.30071.8.53625245697634.8415609725064887.26|640X640X360|"
+"05|Mode2_1609|YPDL-26A-0009|1.2.156.89797079.2335316951.1203213444.1392639632|640X640X360|"
+"06|Mode2_1609|YPDL-26A-0027|1.2.156.89797079.1182197106.1232956091.447186561|640X640X360|"
+"07|Mode3_1609|YPDL-26A-0026|1.2.156.89797079.835519821.1189836059.1130746797|640X640X360|"
+"08|Mode3_1609|YPDL-26A-0026|1.2.826.0.1.3680043.2.461.16167459.1916027858|640X640X360|"
+"09|Mode3_1609|YPDL-26A-0026|1.2.826.0.1.3680043.2.461.16142894.3829726010|640X640X360|"
 )
 
 recon () {  # tag chain out_win  [filter-file]
@@ -61,10 +64,20 @@ recon () {  # tag chain out_win  [filter-file]
     echo "[FAIL] $tag  (see $log)"
     tail -5 "$log"
   fi
+  # The SDK can drop a viewer descriptor named input.json next to the volume.  It is
+  # the same untrustworthy 640/640/600 template as 1.json/full.json (not generated
+  # per study), so it is parked in _logs/ to keep the case folder raw-only.
+  local dir_b
+  dir_b=$(printf '%s' "$out" | sed 's|/[^/]*$||; s|^G:|/g|')
+  if [ -f "$dir_b/input.json" ]; then
+    mv "$dir_b/input.json" "$LOGS/stray_${tag}_input.json"
+    echo "       (parked stray input.json -> _logs/stray_${tag}_input.json)"
+  fi
 }
 
 for entry in "${CASES[@]}"; do
-  IFS='|' read -r idx GROUP CASE STUDY FF <<< "$entry"
+  IFS='|' read -r idx GROUP CASE STUDY DIMS FF <<< "$entry"
+  BASE="volume_${DIMS}_f32"
   TAIL="${STUDY##*.}"
   DIR="$OUTROOT/c${idx}_${GROUP}__${CASE}__${TAIL}"
   DIR_W="$OUTROOT_W/c${idx}_${GROUP}__${CASE}__${TAIL}"
@@ -73,14 +86,14 @@ for entry in "${CASES[@]}"; do
   echo "### c${idx}  ${GROUP}  ${CASE}  ${STUDY}"
   echo "### dir: $DIR"
   echo "##############################################################"
-  recon "c${idx}_A" "$CHAIN_A" "$DIR_W/input.bhc.marfi.rcoor.raw" "$FF"
-  recon "c${idx}_B" "$CHAIN_B" "$DIR_W/input.bhc.marfi.rcoor.conv.rn_ani.raw" "$FF"
+  recon "c${idx}_A" "$CHAIN_A" "$DIR_W/${BASE}.raw" "$FF"
+  recon "c${idx}_B" "$CHAIN_B" "$DIR_W/${BASE}_traditional.raw" "$FF"
 done
 
 echo
 echo "===================== phase 1 summary ====================="
 for entry in "${CASES[@]}"; do
-  IFS='|' read -r idx GROUP CASE STUDY FF <<< "$entry"
+  IFS='|' read -r idx GROUP CASE STUDY DIMS FF <<< "$entry"
   TAIL="${STUDY##*.}"
   DIR="$OUTROOT/c${idx}_${GROUP}__${CASE}__${TAIL}"
   printf 'c%s %s\n' "$idx" "$DIR"

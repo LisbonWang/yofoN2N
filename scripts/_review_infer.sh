@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Expert-review package, phase 2/3: AI inference (r1b..r4b) on the chain-A volume.
 #
-# Each case directory already holds input.bhc.marfi.rcoor.raw (PWLS 0.01 + BHC + RCoor
-# + MARFI).  Every checkpoint is run over the identical in-memory array, so the four
-# outputs differ only by model.  Names get the ".ai." tag the review package asks for:
-#   input.bhc.marfi.rcoor.raw -> input.bhc.marfi.rcoor.ai.r1b.raw ... ai.r4b.raw
+# Each case directory already holds volume_<X>X<Y>X<Z>_f32.raw (PWLS 0.01 + BHC +
+# RCoor + MARFI).  Every checkpoint is run over the identical in-memory array, so
+# the four outputs differ only by model.  Names get the "ai" tag the review package
+# asks for, joined with "_" (--suffix-sep) so the folder stays flat:
+#   volume_640X640X360_f32.raw -> volume_640X640X360_f32_ai_r1b.raw ... _ai_r4b.raw
 #
-# Idempotent: denoise_multi_models.py skips an existing <stem>.<model>.raw.
+# Idempotent: denoise_multi_models.py skips an existing <stem><sep><model>.raw.
 set -u
 export PATH="/usr/bin:/bin:$PATH"
 export PYTHONIOENCODING=utf-8
@@ -22,15 +23,14 @@ LOGS=$OUTROOT/_logs
 mkdir -p "$LOGS"
 
 CONFIG=$REPO_W/configs/air3_mode2_1609_unet3d_h2f_128b_r4.yaml
-INPUT_NAME=input.bhc.marfi.rcoor.raw
-STEM=input.bhc.marfi.rcoor
+SEP=_
 
-MODELS=(--model "ai.r1b=$CK/r1b.best.pt"
-        --model "ai.r2b=$CK/r2b.best.pt"
-        --model "ai.r3b=$CK/r3b.best.pt"
-        --model "ai.r4b=$CK/r4b.best.pt")
+MODELS=(--model "ai_r1b=$CK/r1b.best.pt"
+        --model "ai_r2b=$CK/r2b.best.pt"
+        --model "ai_r3b=$CK/r3b.best.pt"
+        --model "ai_r4b=$CK/r4b.best.pt")
 
-# idx | group | shape(z y x)
+# idx | group | shape(z y x);  DIMS for the file name is the reverse (x X y X z)
 SHAPES=(
 "01|Mode0_1615|600 640 640"
 "02|Mode1_1615|600 640 640"
@@ -45,23 +45,26 @@ SHAPES=(
 
 for entry in "${SHAPES[@]}"; do
   IFS='|' read -r idx group shape <<< "$entry"
+  set -- $shape                       # z y x
+  BASE="volume_${3}X${2}X${1}_f32"
   DIR=$(ls -d "$OUTROOT/c${idx}_"* 2>/dev/null | head -1)
   if [ -z "$DIR" ]; then echo "[miss] c${idx}: no directory"; continue; fi
   DIR_W="$OUTROOT_W/$(basename "$DIR")"
   log="$LOGS/infer_c${idx}.log"
-  if [ ! -f "$DIR/$INPUT_NAME" ]; then
-    echo "[miss] c${idx}: $INPUT_NAME absent (recon phase not finished?)"
+  if [ ! -f "$DIR/${BASE}.raw" ]; then
+    echo "[miss] c${idx}: ${BASE}.raw absent (recon phase not finished?)"
     continue
   fi
   echo "=== c${idx} $(basename "$DIR")  shape=$shape ==="
   t0=$(date +%s)
   "$PY" "$REPO_W/scripts/denoise_multi_models.py" \
-    --input "$DIR_W/$INPUT_NAME" \
+    --input "$DIR_W/${BASE}.raw" \
     --shape $shape \
     --config "$CONFIG" \
     "${MODELS[@]}" \
+    --suffix-sep "$SEP" \
     --tiled --voxel-depth 128 --patch-hw 256 --overlap-d 16 --overlap-hw 16 \
-    --batch-size 2 --band-key ai.r1b --lo 0.2 --hi 0.4 \
+    --batch-size 2 --band-key ai_r1b --lo 0.2 --hi 0.4 \
     --summary "$DIR_W/metrics_ai.json" >"$log" 2>&1
   rc=$?
   t1=$(date +%s)
@@ -77,8 +80,10 @@ echo
 echo "===================== phase 2 summary ====================="
 for entry in "${SHAPES[@]}"; do
   IFS='|' read -r idx group shape <<< "$entry"
+  set -- $shape
+  BASE="volume_${3}X${2}X${1}_f32"
   DIR=$(ls -d "$OUTROOT/c${idx}_"* 2>/dev/null | head -1)
   printf 'c%s %s\n' "$idx" "$(basename "${DIR:-?}")"
-  ls -la "$DIR"/${STEM}.ai.*.raw 2>/dev/null | awk '{printf "      %14d  %s\n", $5, $9}'
+  ls -la "$DIR"/${BASE}_ai_*.raw 2>/dev/null | awk '{printf "      %14d  %s\n", $5, $9}'
 done
 echo "inference phase done"

@@ -24,15 +24,23 @@
 所以 Mode3 的三例来自同一位患者的三份扫描，Mode1 与 Mode3 之间也有一例病例重叠——这是数据决定的。
 
 产物根：`G:\workspace\N2N\outputs\expert_review_ai_vs_conv\`，
-每例一个 `cNN_<组>__<病例>__<uid尾段>/`，内含 **7 卷 raw + 溯源 JSON**（无图片文件）：
+每例一个 `cNN_<组>__<病例>__<uid尾段>/`，内含 **7 卷 raw + 溯源 JSON**（无图片文件）。
+
+命名规则 `volume_<X>X<Y>X<Z>_f32[_后缀].raw`：`X/Y/Z` 取自 `fdkPara` 的
+`xNum/yNum/zNum`，**层数在最后一节** —— 1615 组是 `640X640X600`，1609 组是
+`640X640X360`。名字里只有一个点。
 
 ```
-input.bhc.marfi.rcoor.raw                          AI 输入
-input.bhc.marfi.rcoor.ai.r1b.raw   / r2b / r3b / r4b   四轮 AI 输出（.ai. 标识）
-input.bhc.marfi.rcoor.ai.r4b.gfsharp_s0.3.raw      r4 输出 + 0.3 力度引导滤波锐化
-input.bhc.marfi.rcoor.conv.rn_ani.raw              传统降噪对照
-*.raw.json  case.json                              重建溯源 / 本案汇总
+volume_640X640X360_f32.raw                         AI 输入（PWLS 0.01 + BHC + RCoor + MARFI）
+volume_640X640X360_f32_ai_r1b.raw  / _ai_r2b / _ai_r3b / _ai_r4b   四轮 AI 输出（_ai_ 标识）
+volume_640X640X360_f32_ai_r4b_sharp.raw            r4 输出 + 0.3 力度引导滤波锐化
+volume_640X640X360_f32_traditional.raw             传统降噪对照（同链 + ReduceNoise + Anisotropic）
+volume_640X640X360_f32.raw.json  /  ..._traditional.raw.json       重建溯源 sidecar
+case.json  metrics_ai.json                         本案汇总 / 推理摘要
 ```
+
+`README.md`、`manifest.json`（含机器可读的 `naming` 段）、`metrics.json` 在根目录；
+锐化的 json/figures/markdown 与全部日志在 `_logs/`（案例夹保持只放 raw）。
 
 ## 2. 重建参数：两条链只差降噪模块
 
@@ -165,6 +173,12 @@ bash scripts/_review_infer.sh      # r1b~r4b 四轮推理（8m49s）
 bash scripts/_review_sharpen.sh    # s=0.3 引导滤波锐化（7m49s）
 C:/Users/admin/anaconda3/envs/torch/python.exe scripts/_review_assemble.py
 ```
+
+> 落盘名由脚本按 `fdkPara` 自动生成（`_review_assemble.vol_names`），上面四步重跑
+> 得到的就是本报告里的名字。若手上是一个用旧命名（`input.bhc.marfi.rcoor.*.raw`）
+> 建好的包，用 `scripts/_review_rename.py` 就地迁移：它只改名字与 JSON 里的引用，
+> 不重算体数据；`--dry-run` 先看计划，跑完再重跑一次
+> `_review_assemble.py` 让 `case.json` / `manifest.json` / `README.md` 跟着更新。
 
 模型权重已与训练机逐位核对：
 

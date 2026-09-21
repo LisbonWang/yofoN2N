@@ -8,6 +8,9 @@
 # contrast at a flat-region noise gain of 1 + 0.3/(1+64) ~= 1.005.
 #
 # Case folders stay raw-only: figures / json / markdown of this step go to _logs/.
+#
+# Names (flat, one extension): in  volume_<X>X<Y>X<Z>_f32_ai_r4b.raw
+#                              out volume_<X>X<Y>X<Z>_f32_ai_r4b_sharp.raw
 set -u
 export PATH="/usr/bin:/bin:$PATH"
 export PYTHONIOENCODING=utf-8
@@ -19,11 +22,7 @@ OUTROOT=$REPO/outputs/expert_review_ai_vs_conv
 OUTROOT_W=$REPO_W/outputs/expert_review_ai_vs_conv
 LOGS=$OUTROOT/_logs
 
-STEM=input.bhc.marfi.rcoor
-IN_NAME=${STEM}.ai.r4b.raw
-OUT_NAME=${STEM}.ai.r4b.gfsharp_s0.3.raw
-NOISY=${STEM}.raw
-
+# idx | shape(z y x);  DIMS for the file name is the reverse (x X y X z)
 CASES=(
 "01|600 640 640"
 "02|600 640 640"
@@ -38,6 +37,11 @@ CASES=(
 
 for entry in "${CASES[@]}"; do
   IFS='|' read -r idx shape <<< "$entry"
+  set -- $shape                       # z y x
+  BASE="volume_${3}X${2}X${1}_f32"
+  IN_NAME=${BASE}_ai_r4b.raw
+  OUT_NAME=${BASE}_ai_r4b_sharp.raw
+  NOISY=${BASE}.raw
   DIR=$(ls -d "$OUTROOT/c${idx}_"* 2>/dev/null | head -1)
   if [ -z "$DIR" ]; then echo "[miss] c${idx}: no directory"; continue; fi
   base=$(basename "$DIR")
@@ -73,8 +77,9 @@ echo
 echo "===================== phase 3 summary ====================="
 for entry in "${CASES[@]}"; do
   IFS='|' read -r idx shape <<< "$entry"
+  set -- $shape
   DIR=$(ls -d "$OUTROOT/c${idx}_"* 2>/dev/null | head -1)
-  f="$DIR/$OUT_NAME"
+  f="$DIR/volume_${3}X${2}X${1}_f32_ai_r4b_sharp.raw"
   if [ -f "$f" ]; then printf 'c%s  %14d  %s\n' "$idx" "$(stat -c%s "$f")" "$f"
   else printf 'c%s  MISSING %s\n' "$idx" "$f"; fi
 done

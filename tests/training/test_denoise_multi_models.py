@@ -59,6 +59,23 @@ def test_output_path_honours_outdir():
     assert got == Path("results/full.bhc.r2b.raw")
 
 
+def test_output_path_suffix_sep_flattens_to_single_extension():
+    # Review-package style: 'volume_..._f32.raw' + 'ai_r1b' -> '..._f32_ai_r1b.raw'.
+    got = output_path_for(Path("pkg/volume_640X640X360_f32.raw"), "ai_r1b", sep="_")
+    assert got == Path("pkg/volume_640X640X360_f32_ai_r1b.raw")
+
+
+def test_output_path_suffix_sep_composes_with_outdir():
+    got = output_path_for(Path("in/volume_640X640X600_f32.raw"), "ai_r4b",
+                          Path("out"), sep="_")
+    assert got == Path("out/volume_640X640X600_f32_ai_r4b.raw")
+
+
+def test_output_path_default_sep_is_dot_for_backwards_compatibility():
+    # Guard the historical convention explicitly: everything on disk uses it.
+    assert output_path_for(Path("a/full.bhc.raw"), "r1b") == Path("a/full.bhc.r1b.raw")
+
+
 def test_expected_bytes_matches_float32_volume():
     assert expected_bytes((360, 640, 640)) == 589_824_000
     assert expected_bytes((2, 3, 4)) == 2 * 3 * 4 * DTYPE.itemsize
