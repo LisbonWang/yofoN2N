@@ -55,6 +55,7 @@ from typing import Any, Callable, Iterable
 import numpy as np
 
 from .prepare import _parse_kv_ma
+from .projection_fix import estimate_and_apply_projection_u_offset, write_projection_matrix
 from .subset import (
     build_subset_workspace,
     numbered_raw_files,
@@ -182,6 +183,8 @@ class VariantOptions:
     #: filter.xml copy (after the group's standard filter replacement).  ``None`` disables
     #: the patch (standard filter used verbatim = data1-style no-PWLS reconstruction).
     pwls_scale: float | None = None
+    #: Estimate and apply a per-study detector-u correction using cbkits projections.
+    fix_projection_u_offset: bool = False
 
 
 @dataclass(frozen=True)
@@ -537,6 +540,21 @@ def _patch_filter_xml(
     return patched
 
 
+#: XDay configs legitimately use two-part tag names such as ``<SecondaryBP::BHC>``
+#: (seen in ``filter.xml`` *and*, on the Merak/JIROX-II detector family, in
+#: ``filterPara.xml``).  ``xml.etree`` rejects a ``:`` inside a name, so the names are
+#: rewritten before a *second* parse attempt -- only used to validate structure, the
+#: sanitized text is never written back.
+_VENDOR_TAG_NAME = re.compile(r"<(?P<slash>/?)(?P<panel>[A-Za-z_][\w.\-]*)::(?P<module>[A-Za-z_][\w.\-]*)")
+
+
+def _parseable_config_text(text: str) -> str:
+    """Rewrite ``<Panel::Module>`` tag names into a form ``xml.etree`` accepts."""
+    return _VENDOR_TAG_NAME.sub(
+        lambda m: f"<{m.group('slash')}{m.group('panel')}_{m.group('module')}", text
+    )
+
+
 def validate_study_config(cfg_dir: str | Path) -> list[str]:
     """Return problems that would make the XDay engine crash on this config.
 
@@ -544,7 +562,9 @@ def validate_study_config(cfg_dir: str | Path) -> list[str]:
     ``filterPara.xml`` are blank (incomplete copies) instead of a proper XML document, so
     such studies must be filtered out *before* reconstruction.  ``filter.xml`` is
     deliberately not checked: real files use non-standard tags (``<SecondaryBP::BHC>``)
-    that no XML parser accepts.
+    that no XML parser accepts.  The same vendor tags appear in ``filterPara.xml`` on the
+    Merak (JIROX-II) detector family, so a failed parse is retried once with the tag names
+    normalized; only a file that still cannot be parsed is reported.
     """
     problems: list[str] = []
     for name in ("current.xml", "filterPara.xml", "fdkPara.xml"):
@@ -556,10 +576,14 @@ def validate_study_config(cfg_dir: str | Path) -> list[str]:
         if not data.strip():
             problems.append(f"{name}: blank ({len(data)} bytes, incomplete copy)")
             continue
+        text = data.decode("utf-8", errors="replace")
         try:
-            ET.fromstring(data.decode("utf-8", errors="replace"))
+            ET.fromstring(text)
         except ET.ParseError as exc:
-            problems.append(f"{name}: unparsable ({exc})")
+            try:
+                ET.fromstring(_parseable_config_text(text))
+            except ET.ParseError:
+                problems.append(f"{name}: unparsable ({exc})")
     return problems
 
 
@@ -773,13 +797,20 @@ def reconstruct_study(
                   and abs(float(prev_pwls.get("scale", -1.0)) - options.pwls_scale) < 1e-12):
             prev = None
         if prev is not None:
+            previous_fix = prev.get("projection_u_offset_fix")
+            if options.fix_projection_u_offset != isinstance(previous_fix, dict):
+                prev = None
+            elif options.fix_projection_u_offset and previous_fix.get("pairing_method") != "angle_range_half_turn_v1":
+                # Cached offsets produced by the former fixed-N/2 pairing are stale.
+                prev = None
+        if prev is not None:
             record = _base_record(study, options, group)
             # Inherit shape/dtype/outputs from the previous run's metadata.json so that
             # verify_volumes can re-check the existing volumes (size check) instead of
             # flagging them as "record missing shape/outputs" on every resumable run.
             for key in ("shape", "dtype", "spacing_zyx", "outputs", "per_view_sliced",
                         "per_view_warnings", "step_fixes", "fdk_changed", "fdk_para",
-                        "filter_file", "filter_replaced", "pwls"):
+                        "filter_file", "filter_replaced", "pwls", "projection_u_offset_fix"):
                 if key in prev:
                     record[key] = prev[key]
             record.setdefault("outputs", {name: f"{rel_prefix}/{name}" for name in expected})
@@ -805,18 +836,29 @@ def reconstruct_study(
             study.raw_dir, study.cfg_dir, workspace / "full", options.link_mode,
             max_views=source_no_view,
         )
+        projection_u_offset_fix = None
+        if options.fix_projection_u_offset:
+            projection_u_offset_fix, corrected_matrix = estimate_and_apply_projection_u_offset(
+                full_raw, full_cfg, study.mode, study.kv, study.ma, workspace,
+                expected_views=source_no_view,
+            )
+            write_projection_matrix(full_cfg, corrected_matrix)
         workspaces = {"full": (full_raw, full_cfg)}
         if split_subsets:
             if study.mode.casefold() == "mode1":
                 even_indices, odd_indices = split_projection_indices_blockwise(source_no_view, block_size=2)
             else:
                 even_indices, odd_indices = split_projection_indices(source_no_view)
+            subset_raw_source, subset_cfg_source = (
+                (full_raw, full_cfg) if options.fix_projection_u_offset
+                else (study.raw_dir, study.cfg_dir)
+            )
             even_ws = build_subset_workspace(
-                study.raw_dir, study.cfg_dir, even_indices, workspace / "even",
+                subset_raw_source, subset_cfg_source, even_indices, workspace / "even",
                 options.link_mode, per_view, per_view_count=source_no_view,
             )
             odd_ws = build_subset_workspace(
-                study.raw_dir, study.cfg_dir, odd_indices, workspace / "odd",
+                subset_raw_source, subset_cfg_source, odd_indices, workspace / "odd",
                 options.link_mode, per_view, per_view_count=source_no_view,
             )
             workspaces["even"] = (even_ws.raw_dir, even_ws.cfg_dir)
@@ -898,6 +940,8 @@ def reconstruct_study(
             "per_view_sliced": dict(per_view),
             "per_view_warnings": per_view_warnings,
         })
+        if projection_u_offset_fix is not None:
+            record["projection_u_offset_fix"] = projection_u_offset_fix
         _write_json(case_out / "metadata.json", record)
         return record
     finally:

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "description": "JIROX-II (Merak fpH|t detector, configMerak/PDI1917) reconstruction groups. Same mechanism as recon_groups.json, but the target geometry is each scan mode's OWN native fdkPara geometry instead of a PDL FOV: Mode2 is 680x680x520 @0.25mm (170x170x130mm) and Mode1 is 600x600x600 @0.30mm (180x180x180mm). Kept in a separate file on purpose -- group matching is by source mode only, so adding these to recon_groups.json would silently make every PDL Mode2 study build an extra 1713 group. The fdk_para values are the source's own values, pinned so a future source-side geometry change cannot silently alter the output volume; output names are Mode2_1713 / Mode1_1818 following the <Mode>_<xFOVcm><zFOVcm> convention. filter_file holds each mode's majority filter.xml extracted from the real data (the variants differ only in <Pwls><beta>, which is overwritten per study by --pwls-scale anyway).",
+  "groups": {
+    "Mode2_1713": {
+      "source_modes": ["Mode2"],
+      "fdk_para": {
+        "xNum": 680, "yNum": 680, "zNum": 520,
+        "xSpacing": 0.25, "ySpacing": 0.25, "zSpacing": 0.25
+      },
+      "filter_file": "recon_filters/JIROX2_Mode2.filter.xml"
+    },
+    "Mode1_1818": {
+      "source_modes": ["Mode1"],
+      "fdk_para": {
+        "xNum": 600, "yNum": 600, "zNum": 600,
+        "xSpacing": 0.3, "ySpacing": 0.3, "zSpacing": 0.3
+      },
+      "filter_file": "recon_filters/JIROX2_Mode1.filter.xml"
+    }
+  }
+}

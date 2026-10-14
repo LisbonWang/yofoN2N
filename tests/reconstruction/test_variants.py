@@ -349,6 +349,76 @@ def test_reconstruct_study_writes_6_variants_and_fixes_step(tmp_path):
     assert record2["outputs"] == record["outputs"]
 
 
+def test_projection_offset_fix_is_applied_to_workspaces_and_invalidates_old_outputs(tmp_path, monkeypatch):
+    study = _make_study(tmp_path, count=5)
+    out = tmp_path / "out"
+    group = _make_group()
+    calls = []
+    original_matrix = np.fromfile(study.cfg_dir / "projectionMatrix.bin", dtype="<f4").reshape(-1, 21)
+
+    reconstruct_study(
+        study, group, out,
+        VariantOptions(xday_dir=tmp_path / "sdk", top_dir="PDL"),
+        reconstruct_fn=_make_fake_reconstruct(calls),
+    )
+    calls.clear()
+
+    def fake_offset_fix(raw_dir, cfg_dir, mode, kv, ma, scratch_dir, *, expected_views):
+        corrected = np.fromfile(Path(cfg_dir) / "projectionMatrix.bin", dtype="<f4").reshape(-1, 21)
+        corrected[:, 14] += 2
+        return {"anchor_column": 10, "origin_column": 8.0, "offset_px": 2.0,
+                "distance_mm": 0.5, "accepted": True,
+                "pairing_method": "angle_range_half_turn_v1"}, corrected
+
+    monkeypatch.setattr(
+        "cbct_n2n.reconstruction.variants.estimate_and_apply_projection_u_offset",
+        fake_offset_fix,
+    )
+
+    def capture_matrix(raw_dir, cfg_dir, kv, ma, xday_install_dir, post_procs, dtype, show_progress, sdk):
+        matrix = np.fromfile(Path(cfg_dir) / "projectionMatrix.bin", dtype="<f4").reshape(-1, 21)
+        calls.append((len(list(Path(raw_dir).glob("*.raw"))), matrix[:, 14].copy()))
+        return _FakeResult(np.zeros((8, 6, 4), dtype="<f4"))
+
+    record = reconstruct_study(
+        study, group, out,
+        VariantOptions(xday_dir=tmp_path / "sdk", top_dir="PDL",
+                       fix_projection_u_offset=True),
+        reconstruct_fn=capture_matrix,
+    )
+
+    assert record["skipped"] is False
+    assert record["projection_u_offset_fix"]["accepted"] is True
+    assert len(calls) == 6
+    for count, column in calls:
+        if count == 5:
+            np.testing.assert_allclose(column, original_matrix[:, 14] + 2)
+        elif count == 3:
+            np.testing.assert_allclose(column, original_matrix[[0, 2, 4], 14] + 2)
+        else:
+            np.testing.assert_allclose(column, original_matrix[[1, 3], 14] + 2)
+    np.testing.assert_array_equal(
+        np.fromfile(study.cfg_dir / "projectionMatrix.bin", dtype="<f4").reshape(-1, 21),
+        original_matrix,
+    )
+
+    metadata_path = out / "PDL" / group.name / study.case_id / study.study_uid / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["projection_u_offset_fix"].pop("pairing_method")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    calls.clear()
+
+    refreshed = reconstruct_study(
+        study, group, out,
+        VariantOptions(xday_dir=tmp_path / "sdk", top_dir="PDL",
+                       fix_projection_u_offset=True),
+        reconstruct_fn=capture_matrix,
+    )
+
+    assert refreshed["skipped"] is False
+    assert len(calls) == 6
+
+
 def test_reconstruct_study_applies_group_fdk_para_and_standard_filter(tmp_path):
     """Group fdkPara overrides reshape the volume (Mode2 -> 0808) and the standard filter file replaces filter.xml."""
     study = _make_study(tmp_path, count=5, step="2")
@@ -578,3 +648,31 @@ def test_validate_study_config_flags_blank_and_unparsable(tmp_path):
     # missing file is reported too
     (cfg / "current.xml").unlink()
     assert any("current.xml: missing" in p for p in validate_study_config(cfg))
+
+
+def test_validate_study_config_accepts_vendor_tag_names(tmp_path):
+    """Merak (JIROX-II) configs put ``<SecondaryBP::Fix>`` in filterPara.xml.
+
+    ``xml.etree`` cannot parse the ``::`` in a tag name, which used to make every
+    JIROX-II study look like a corrupt copy and get dropped before reconstruction.
+    Such a file must be accepted; a genuinely truncated one must still be flagged.
+    """
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "current.xml").write_text('<?xml version="1.0" encoding="UTF-8"?>\n<FDK_current_config>\n\t<max>10</max>\n</FDK_current_config>\n', encoding="utf-8")
+    (cfg / "filterPara.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<FDK_filter_config>\n'
+        '\t<SecondaryBP::Fix>\n\t\t<alwaysEnable>0</alwaysEnable>\n\t</SecondaryBP::Fix>\n'
+        '</FDK_filter_config>\n',
+        encoding="utf-8",
+    )
+    (cfg / "fdkPara.xml").write_text("<FDK_sys_para><noView>4</noView></FDK_sys_para>", encoding="utf-8")
+    assert validate_study_config(cfg) == []
+
+    # a truncated document (open tag, no root close) is still reported
+    (cfg / "filterPara.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<FDK_filter_config>\n\t<SecondaryBP::Fix>\n',
+        encoding="utf-8",
+    )
+    problems = validate_study_config(cfg)
+    assert len(problems) == 1 and "filterPara.xml" in problems[0] and "unparsable" in problems[0]

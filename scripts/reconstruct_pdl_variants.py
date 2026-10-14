@@ -65,6 +65,7 @@ from cbct_n2n.reconstruction import (
 )
 
 INDEX_NAME = "reconstruction-index.json"
+INDEX_WRITE_ATTEMPTS = 3
 DEFAULT_GROUPS_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "recon_groups.json"
 
 
@@ -95,6 +96,9 @@ def build_parser() -> argparse.ArgumentParser:
                         default=r"Z:\raid0\yyc\AIReduceNoise",
                         help="Where <source>/<Mode>_<FOV>/<case_id>/<study_uid>/*.raw volumes are written "
                              "(top-level <source> defaults to the source root name, e.g. PDL)")
+    parser.add_argument("--top-dir", default=None,
+                        help="Override the top-level output directory name (default: source root name). "
+                             "Useful for keeping fixed and unmodified reconstructions in separate trees.")
     parser.add_argument("--xday-dir", type=Path, default=Path(os.environ.get("XDAY_DIR", "D:\\XDay Release\\XDay617.2")),
                         help="XDay SDK directory (xday.dll + dependencies)")
     parser.add_argument("--combo", action="append", metavar="TAG=CHAIN", default=None,
@@ -119,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="JSON file defining the reconstruction groups (source modes + fdkPara geometry + standard filter file)")
     parser.add_argument("--groups", default=None,
                         help="Comma-separated subset of group names to reconstruct (default: all groups matching each study's mode)")
+    parser.add_argument("--index", type=Path, default=None,
+                        help="Index file to merge into and rewrite. Relative paths are resolved against "
+                             f"--output-root. Default: <output-root>/{INDEX_NAME}. Needed when several source "
+                             "datasets share one output root (e.g. AIReduceNoise3/PDL and AIReduceNoise3/JIROX-II): "
+                             "give each its own index, otherwise they overwrite each other's metadata.")
     parser.add_argument("--kv", type=float, default=None, help="Override tube kV for all studies")
     parser.add_argument("--ma", type=float, default=None, help="Override tube mA for all studies")
     parser.add_argument("--pwls-scale", type=float, default=0.01,
@@ -126,6 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "PWLS forced on and Hamming window (0.54/0.46) enabled in every subset's filter.xml")
     parser.add_argument("--no-pwls", action="store_true",
                         help="Disable the PWLS+Hamming patch (data1-style: standard filter used verbatim)")
+    parser.add_argument("--fix-projection-u-offset", action="store_true",
+                        help="Estimate a per-study detector-u offset from cbkits 180-degree projection pairs")
     parser.add_argument("--limit", type=int, default=None, help="Process at most this many studies (useful for smoke tests)")
     parser.add_argument("--exclude", action="append", default=[],
                         help="Exclude a (study_uid, group) work item: repeat the flag as "
@@ -143,6 +154,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace-root", type=Path, default=None,
                         help="Base directory for temp workspaces (default: system temp)")
     return parser
+
+
+def resolve_index_path(output_root: Path, index: Path | None) -> Path:
+    """Resolve where the index is read from / written to.
+
+    ``--index`` may be absolute, or relative (then it is taken against
+    ``--output-root``, so ``--index JIROX-II/reconstruction-index.json`` gives
+    several datasets sharing one output root their own index).
+    """
+    path = Path(INDEX_NAME) if index is None else index
+    return path if path.is_absolute() else output_root / path
 
 
 def main() -> int:
@@ -218,7 +240,7 @@ def main() -> int:
 
     print(f"Discovered {len(studies)} study(ies) -> {len(work)} (study, group) item(s), "
           f"skipped {len(skipped)} without usable config/kV-mA or matching group", flush=True)
-    top_dir = Path(args.source_root).name or "SOURCE"
+    top_dir = args.top_dir or Path(args.source_root).name or "SOURCE"
     for study, group in work:
         print(f"  {top_dir}/{group.name:<14} {study.case_id}/{study.study_uid}\t{study.mode}\t{study.nviews} views\t"
               f"{study.kv}kV {study.ma}mA\t{study.raw_dir.name}", flush=True)
@@ -230,6 +252,9 @@ def main() -> int:
 
     output_root = args.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    index_path = resolve_index_path(output_root, args.index)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Index file: {index_path}", flush=True)
 
     try:
         from xday import load_xday
@@ -251,6 +276,7 @@ def main() -> int:
         workspace_root=args.workspace_root,
         top_dir=top_dir,
         pwls_scale=None if args.no_pwls else args.pwls_scale,
+        fix_projection_u_offset=args.fix_projection_u_offset,
     )
 
     records, failures = [], 0
@@ -278,6 +304,16 @@ def main() -> int:
             continue
         records.append(record)
         issues = [] if args.no_verify else verify_volumes(record, output_root)
+        offset_fix = record.get("projection_u_offset_fix")
+        if isinstance(offset_fix, dict):
+            decision = "accepted" if offset_fix["accepted"] else "rejected"
+            print(f"  projection u-offset: {decision}, "
+                  f"anchor={offset_fix['anchor_column']}, origin={offset_fix['origin_column']:.3f}, "
+                  f"applied={offset_fix['offset_px']:.3f}px/{offset_fix['offset_mm']:.3f}mm, "
+                  f"distance={offset_fix['distance_mm']:.3f}mm, "
+                  f"pair_offset={offset_fix['pair_offset_frames']}/{offset_fix['source_view_count']} views, "
+                  f"angleRange={offset_fix['angle_range_turns']:.6f} turns "
+                  f"({offset_fix['pair_angle_degrees']:.3f}deg)", flush=True)
         if issues:
             failures += 1
             record["status"] = "verify_failed"
@@ -292,7 +328,7 @@ def main() -> int:
         print(f"  [{i}/{total}] {elapsed / 60:.1f} min elapsed, "
               f"{per_item:.1f} s/item, ETA {remaining / 60:.1f} min", flush=True)
 
-    existing = load_index(index_path) if (index_path := output_root / INDEX_NAME).is_file() else None
+    existing = load_index(index_path) if index_path.is_file() else None
     merged_records = merge_index_records(existing.get("records", []) if existing else [], records)
     index = {
         "schema_version": 1,
@@ -306,7 +342,18 @@ def main() -> int:
     }
     temporary = index_path.with_name(index_path.name + ".tmp")
     temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(index_path)
+    # Network shares intermittently refuse the atomic rename (observed WinError 5 on
+    # an SMB mount even though the same replace succeeds on an immediate retry).
+    for attempt in range(1, INDEX_WRITE_ATTEMPTS + 1):
+        try:
+            temporary.replace(index_path)
+            break
+        except PermissionError as exc:
+            if attempt >= INDEX_WRITE_ATTEMPTS:
+                raise
+            print(f"  index write attempt {attempt}/{INDEX_WRITE_ATTEMPTS} failed "
+                  f"({exc}); retrying in 1s", flush=True)
+            time.sleep(1.0)
     ok = sum(1 for r in records if r.get("status") == "success")
     verify_failed = sum(1 for r in records if r.get("status") == "verify_failed")
     print(f"Wrote {index_path}: total_records={len(merged_records)} this_run: success={ok} "
