@@ -1,4 +1,4 @@
-"""Read-only pre-flight for the AIReduceNoise3 r1 blend-at-round-1 round.
+"""Historical AIR3 r1 pre-flight check for a fixed experiment manifest.
 
 Verifies that the Mode2_1609 train/val manifest is ready to host the r1 target:
   1. record count / split sizes (train/val/test),

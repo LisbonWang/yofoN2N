@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$FixWorkspaceRoot,
     [Parameter(Mandatory = $true)][string]$OriginalLog,
     [Parameter(Mandatory = $true)][string]$FixLog,
-    [string]$XdayDir = 'D:\XDay Release\XDay617.2'
+    [Parameter(Mandatory = $true)][string]$XdayDir
 )
 
 $ErrorActionPreference = 'Stop'

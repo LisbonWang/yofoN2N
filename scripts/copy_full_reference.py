@@ -10,7 +10,8 @@ from pathlib import Path
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--manifest", type=Path, default=Path("/data/raid0/yyc/AIReduceNoise/splits_1609.json"))
+    ap.add_argument("--manifest", type=Path, required=True,
+                    help="Manifest containing full.raw paths for the selected split.")
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--split", default="test")
     args = ap.parse_args()

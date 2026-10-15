@@ -1,9 +1,95 @@
-# 方案 B：r1 混合递归（blend-at-round-1）——**最终方案**
+# 最终方案更新：N2N 降噪与 R0 抗混叠蒸馏融合
 
-> 状态：**最终方案已启动执行**（2026-09-17）。AIReduceNoise3 r0 已在服务器 GPU 0
-> 以现有 r0 best.pt（epoch 78）热启动，tmux=`air3_r0`，日志=`/tmp/air3_r0.log`，
-> run=`runs/air3_mode2_1609_unet3d_h2f_128_r0`。方案 A（`r3-density-blend.md`）降级为对照，
-> 其 AIReduceNoise2 r0~r3 实测仅作为机制与终点预期基线，不作为最终模型。
+> **AIReduceNoise3 实验快照（2026-10-14 整理）**：以下数据、服务器和路径只适用于原始实验环境，具体值为历史记录。通用训练步骤见仓库根目录 `README.md`。
+
+> 状态：**新最终方案已确认**。本方案取代下方历史方案 B 的 r0→r4b 递归链；旧链结果保留作对照，不再作为当前训练计划。
+
+## 1. 目标
+
+训练两个同参数规模的教师模型，分别学习 Noise2Noise 降噪和 half-view 到 full-view 的抗混叠映射；再将它们串联生成教师目标，蒸馏到一个同参数规模的学生模型，使单模型同时具备抗混叠与强 N2N 降噪能力。
+
+## 2. 三阶段训练流程
+
+| 阶段 | 模型 | 输入→监督目标 | 学习目标 |
+| --- | --- | --- | --- |
+| 1 | `N2N` | `even→odd` 与 `odd→even` | half→half Noise2Noise，学习强去噪 |
+| 2 | `R0` | `even→full` 与 `odd→full` | half→full，学习抗混叠 |
+| 3 | `Fused`（蒸馏学生） | `full→N2N(R0(full))` | 将 R0 的抗混叠结果与 N2N 的强去噪融合到单模型 |
+
+第三阶段的教师目标按顺序生成：先对全视图重建运行 `R0`，再把 `R0(full)` 送入 `N2N`，即 `target = N2N(R0(full))`。学生直接以原始 `full` 为输入，拟合该组合教师的输出。
+
+三个模型使用相同架构和参数规模。沿用当前 AIReduceNoise3 `Mode2_1609` 训练计划的模型规格：UNet3D、`base_channels=16`、`depth=4`；输入窗口 D=128、stride=112、H/W patch=256。N2N、R0 与学生各有独立 checkpoint。除监督映射和 run 目录外，训练超参沿用同一基准配置，保证参数规模与优化设置可比较。
+
+## 3. 数据与隔离
+
+- 训练范围沿用 AIReduceNoise3 `Mode2_1609` 的 200 个 study，train/val=180/20；跨模式 11 例独立测试集只用于最终评估。
+- 沿用四域训练：`full`、`full.bhc`、`full.marfi`、`full.marfi.bhc`。half-view 对及 full-view 目标必须在同一 study 内构造，study 级 split 不变。
+- 第三阶段教师目标只为 train/val 生成；test 不运行教师，也不参与蒸馏。
+- N2N 教师必须以训练时相同的 half-view 输入分布训练。第三阶段将 `R0(full)` 作为 N2N 输入，是方案指定的串联推理步骤；生成目标时记录输入/输出范围并做抽样视觉检查。
+
+## 4. 训练和验收
+
+1. 训练 `N2N` 与 `R0` 两个教师模型，分别保存最佳 checkpoint，并确认验证集收敛。
+2. 用 `R0` 处理 train/val 的 `full`，再将结果输入 `N2N`，生成并登记 `full_by_R0_by_N2N` 目标。
+3. 训练 `Fused` 学生：输入 `full`，目标为 `full_by_R0_by_N2N`，参数规模与两个教师一致。
+4. 在独立测试集上并列评估 half 输入下的 N2N、R0，以及 full 输入下的蒸馏学生。除高频/分带指标外，必须做同层视觉质检，检查抗混叠伪影、纹理保留和过平滑；不得把教师目标或 full 重建视为干净真值。
+
+### 可复现命令
+
+以下命令在 AIR3 训练服务器执行。先训练两个教师：
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python scripts/train_voxel.py \
+  --config configs/air3_mode2_1609_unet3d_n2n.yaml \
+  --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json
+
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python scripts/train_voxel.py \
+  --config configs/air3_mode2_1609_unet3d_r0.yaml \
+  --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json
+```
+
+再按顺序生成 `R0(full)` 和 `N2N(R0(full))`。目标生成脚本默认只处理 train/val，禁止将 test 加入 `--splits`：
+
+```bash
+python scripts/prepare_full_dn_targets.py \
+  --config configs/air3_mode2_1609_unet3d_r0.yaml \
+  --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json \
+  --checkpoint runs/air3_mode2_1609_unet3d_r0/best.pt \
+  --target-suffix by_r0 --splits train,val --tiled --patch-hw 256 \
+  --overlap-d 16 --overlap-hw 16 --batch-size 2 --device cuda:0
+
+python scripts/prepare_full_dn_targets.py \
+  --config configs/air3_mode2_1609_unet3d_n2n.yaml \
+  --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json \
+  --checkpoint runs/air3_mode2_1609_unet3d_n2n/best.pt \
+  --input-suffix by_r0 --target-suffix by_r0_by_n2n \
+  --splits train,val --tiled --patch-hw 256 --overlap-d 16 \
+  --overlap-hw 16 --batch-size 2 --device cuda:0
+```
+
+最后从随机初始化训练蒸馏学生，目标键为 `full.by_r0_by_n2n.raw`：
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python scripts/train_voxel.py \
+  --config configs/air3_mode2_1609_unet3d_fused.yaml \
+  --manifest /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced200_trainval.json
+```
+
+## 5. 实现约束
+
+`N2NDataset` 已支持 `full` 映射源和 `full.*` 监督目标；`prepare_full_dn_targets.py --input-suffix` 可从已登记的中间体继续运行教师。第三阶段可直接使用 `train_voxel.py` 和 `configs/air3_mode2_1609_unet3d_fused.yaml`。
+
+旧方案 B 的计划与执行记录从下一节起保留，仅供追溯，不代表当前方案。
+
+---
+
+## 历史方案：方案 B（r1 混合递归，blend-at-round-1）
+
+> 已被上面的三阶段 N2N/R0 蒸馏方案取代。其训练、验收及结论仅作为历史记录。
+
+### 历史执行背景
+
+原状态：AIReduceNoise3 r0 于 2026-09-17 在服务器 GPU 0 以既有 r0 best.pt 热启动；方案 A（`r3-density-blend.md`）曾降级为对照。
 
 ## 1. 最终训练数据范围
 

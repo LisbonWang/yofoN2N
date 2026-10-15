@@ -18,7 +18,8 @@ from cbct_n2n.training.inference import infer_volume, write_raw_volume
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export CBCT source and denoised volumes as RAW.")
-    parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config matching the selected checkpoint.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

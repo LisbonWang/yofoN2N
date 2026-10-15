@@ -12,7 +12,8 @@ from cbct_n2n.reconstruction import PrepareOptions, discover_cases, prepare_case
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Reconstruct Mode2 CBCT even/odd/full pairs from configuration.")
-    parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Reconstruction YAML with user-supplied source, output, and SDK paths.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--keep-workspace", action="store_true")

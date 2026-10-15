@@ -80,7 +80,8 @@ def build_model(arch: str, model_cfg: dict) -> nn.Module:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train a 3D-input / 3D-output model on RAW volumes.")
-    parser.add_argument("--config", type=Path, default=Path("configs/unet3d_smoke.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config; no dataset-specific config is assumed.")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--resume", type=Path)

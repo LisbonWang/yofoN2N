@@ -21,7 +21,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--shape", type=int, nargs=3, metavar=("Z", "Y", "X"), required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config matching the selected checkpoint.")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
     args = parser.parse_args()

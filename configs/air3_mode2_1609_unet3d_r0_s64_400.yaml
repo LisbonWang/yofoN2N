@@ -1,0 +1,39 @@
+# Continue half-to-full anti-aliasing fine-tuning from the current stride-64 best.
+reconstruction:
+  source_root: '/data/raid0/yyc/AIReduceNoise3'
+  output_root: '/data/raid0/yyc/AIReduceNoise3/PDL'
+  post_procs: ''
+  dtype: float32
+  link_mode: auto
+
+data:
+  manifest: /data/raid0/yyc/AIReduceNoise3/splits_mode2_1609_balanced400_trainval.json
+  metric_data_range: 4.0
+  seed: 42
+  augment: true
+  mappings: [even->full, odd->full]
+  residuals: [bhc, marfi]
+  voxel_depth: 128
+  stride: 64
+  patch_size: 256
+
+model:
+  arch: unet3d
+  in_channels: 1
+  out_channels: 1
+  base_channels: 16
+  depth: 4
+  residual: true
+
+training:
+  epochs: 100
+  batch_size: 1
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  num_workers: 8
+  amp: true
+  gradient_clip: 1.0
+  patience: 5
+  device: cuda:0
+  run_dir: runs/air3_mode2_1609_unet3d_r0_s64_400
+  plot_interval: 5

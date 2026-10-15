@@ -1,5 +1,7 @@
 # 1609 视野去噪训练计划
 
+> **历史实验快照（2026-10-14 整理）**：本文件记录 AIReduceNoise 数据、机器与路径布局，保留原始参数用于复现。它不是通用安装或训练指南；可移植流程见仓库根目录 `README.md` 与 `docs/data-format.md`。
+
 > 数据源：全量重建产物 `/data/raid0/yyc/AIReduceNoise/PDL/`（Windows 侧 `Z:\raid0\yyc\AIReduceNoise\PDL\`；`reconstruction-index.json`，308 项全 success）
 > 训练目标：Noise2Noise 自监督（even ↔ odd 独立噪声对），在 1609 视野（FOV 16cm）数据上训练 2D UNet 去噪模型
 > 状态：计划稿 v1.3（2026-09-02，`create_recon_splits.py` 落地；修正 case 语义为设备号；E1 manifest 已生成：train 83 / val 10 / test 17）

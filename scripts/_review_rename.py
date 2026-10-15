@@ -31,8 +31,8 @@ extension, and it is idempotent, so the script can be re-run safely at any time.
 
 Usage::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/_review_rename.py --dry-run
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/_review_rename.py
+    python scripts/_review_rename.py --dry-run
+    python scripts/_review_rename.py
 """
 from __future__ import annotations
 

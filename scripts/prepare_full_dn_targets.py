@@ -1,28 +1,25 @@
-"""Prepare teacher-denoised full-view (``full.<suffix>``) supervision targets.
+"""Prepare teacher-inferred full-view (``full.<suffix>``) supervision targets.
 
-Step 1 of the **recursive training scheme** (half -> full_denoised): use an
-already-converged *teacher* model (the round ``k-1`` half->full checkpoint) to
-denoise the ``full`` reconstruction of every train/val study, then supervise
-the next round on ``even/odd -> full.<suffix>``.
+Use a converged teacher checkpoint to infer from a full-view volume or a
+previously generated ``full.*`` volume. This supports chained distillation
+such as ``N2N(R0(full))``.
 
 For every study in the requested splits this script:
-  1. locates ``full.raw`` through the manifest record's outputs,
-  2. runs the teacher model on the full-view volume (further-denoised full
-     reconstruction) and writes ``full.<suffix>.raw`` (headerless float32)
-     *next to* the original ``full.raw``,
-  3. registers ``full.<suffix>.raw`` in the manifest record's ``outputs`` so
-     that :class:`cbct_n2n.data.n2n_dataset.N2NDataset` can supervise
-     ``even/odd -> full.<suffix>`` (the target whitelist already accepts any
-     ``full.*`` variant),
-  4. writes a per-study diagnostic of the *noise level* of ``full.<suffix>``
-     vs ``full``.  This -- NOT PSNR -- is the correct signal for whether the
-     recursive target is actually cleaner: because ``full`` is itself noisy,
+  1. locates the configured ``full`` / ``full.<input-suffix>`` volume through
+     the manifest record's outputs,
+  2. runs the teacher model on that volume (further-denoised full
+     reconstruction) and writes ``full.<target-suffix>.raw`` (headerless
+     float32) in the study output directory,
+  3. registers ``full.<target-suffix>.raw`` in the manifest record's
+     ``outputs`` so :class:`cbct_n2n.data.n2n_dataset.N2NDataset` can use it
+     as a target,
+  4. writes a per-study diagnostic of the *noise level* of output vs input.
+     This -- NOT PSNR -- is a useful signal for whether the teacher target is
+     actually lower-noise: because the input is noisy,
      ``half -> full`` already contains a Noise2Noise component, so the
-     recursive objective is a lower-noise image, not a higher PSNR against
-     the noisy ``full``.  A noise-std drop (``full`` > ``full.<suffix>``)
-     means the teacher produced a meaningfully cleaner target and the round
-     is worth training; a ~0 drop means the teacher did not clean ``full``
-     and the round degenerates.
+     teacher objective is the transformed volume, not a higher PSNR against
+     the noisy input. A noise-std drop is only a high-frequency signal and
+     must be considered alongside visual texture checks.
 
 Existing ``full.<suffix>.raw`` files are skipped (resume-safe); the manifest
 patch is idempotent and applied once after the loop.  The overview JSON is
@@ -77,6 +74,15 @@ def _resolve_output(record: dict, logical: str) -> str | None:
     return None
 
 
+def _full_logical_name(suffix: str) -> str:
+    suffix = suffix.strip()
+    if not suffix:
+        return "full"
+    if "/" in suffix or "\\" in suffix or suffix in {".", ".."}:
+        raise ValueError(f"invalid volume suffix {suffix!r}")
+    return f"full.{suffix}"
+
+
 def _denoise_volume(model, arch: str, volume: np.ndarray, device: torch.device,
                     batch_size: int, voxel_depth: int, tiled: bool = False,
                     patch_hw: int = 256, overlap_d: int = 16,
@@ -111,12 +117,15 @@ def merge_overview_rows(previous: object, new_rows: list[dict]) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Generate full.<suffix> teacher-denoised targets for the recursive scheme."
+        description="Generate full.<suffix> targets from a registered full volume using a teacher model."
     )
-    parser.add_argument("--config", type=Path, default=Path("configs/1609v2_unet2d_ds_h2f.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config matching the teacher checkpoint.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path, required=True,
-                        help="Teacher checkpoint (the converged half->full model).")
+                        help="Teacher checkpoint used to infer the requested input volume.")
+    parser.add_argument("--input-suffix", default="",
+                        help="Input suffix; empty reads full.raw, while 'by_r0' reads full.by_r0.raw.")
     parser.add_argument("--arch", choices=("unet2d", "unet2d_ds", "unet3d"), default=None,
                         help="Teacher arch for inference (default: read config.model.arch).")
     parser.add_argument("--target-suffix", default=DEFAULT_TARGET_SUFFIX,
@@ -139,6 +148,12 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if not args.target_suffix.strip():
+        parser.error("--target-suffix must not be empty")
+    input_logical = _full_logical_name(args.input_suffix)
+    target_logical = _full_logical_name(args.target_suffix)
+    if input_logical == target_logical:
+        parser.error("input and target suffixes must differ")
     manifest_path = args.manifest or Path(config["data"]["manifest"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     base = manifest_path.resolve().parent
@@ -154,7 +169,7 @@ def main() -> int:
     model.eval()
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[prep] teacher={args.checkpoint} arch={arch} params={n_params:,} "
-          f"device={device} target_suffix={args.target_suffix}", flush=True)
+          f"device={device} input={input_logical} target={target_logical}", flush=True)
 
     records = {str(record["key"]): record for record in manifest["records"]}
     splits = [s.strip() for s in args.splits.split(",") if s.strip()]
@@ -165,41 +180,46 @@ def main() -> int:
     print(f"[prep] splits={splits} studies={len(keys)}", flush=True)
 
     overview_rows: list[dict] = []
+    output_paths: dict[str, str] = {}
     n_existing = n_new = n_skip_missing = 0
     for key in keys:
         record = records[key]
-        relative = _resolve_output(record, "full")
+        relative = _resolve_output(record, input_logical)
         if relative is None:
             n_skip_missing += 1
-            print(f"[skip] {key}: no full.raw in outputs", flush=True)
+            print(f"[skip] {key}: no {input_logical}.raw in outputs", flush=True)
             continue
-        full_path = base / relative
-        if not full_path.exists():
+        input_path = base / relative
+        if not input_path.exists():
             n_skip_missing += 1
-            print(f"[skip] {key}: full missing {full_path}", flush=True)
+            print(f"[skip] {key}: input missing {input_path}", flush=True)
             continue
 
-        dst = full_path.with_name(f"{full_path.stem}.{args.target_suffix}.raw")
+        dst = input_path.parent / f"{target_logical}.raw"
+        output_paths[key] = str(dst.relative_to(base).as_posix())
         if dst.exists():
             n_existing += 1
             print(f"[exists] {key}: {dst.name} already there", flush=True)
             continue
         shape = tuple(int(dim) for dim in record["shape"])
         dtype = np.dtype(record.get("dtype") or "<f4")
-        full = np.memmap(full_path, dtype=dtype, mode="r", shape=shape)
-        denoised = _denoise_volume(model, arch, full, device, args.batch_size, voxel_depth,
+        source_volume = np.memmap(input_path, dtype=dtype, mode="r", shape=shape)
+        denoised = _denoise_volume(model, arch, source_volume, device, args.batch_size, voxel_depth,
                                    tiled=args.tiled, patch_hw=args.patch_hw,
                                    overlap_d=args.overlap_d, overlap_hw=args.overlap_hw)
         write_raw_volume(dst, denoised)
-        full_arr = np.asarray(full)
-        # Fast noise-level gate only (Immerkaer Laplacian kernel, ~1s per volume).
+        source_arr = np.asarray(source_volume)
+        # Fast noise-level diagnostic only (Immerkaer Laplacian kernel, ~1s per volume).
         # The median-filter estimator (estimate_noise_std) is ~20s/volume and must
         # NOT run inside the target-generation loop; PSNR/SSIM vs full are also
         # meaningless here (full is noisy) and are omitted.
         noise = {
-            "full_immerkaer": estimate_noise_std_immerkaer(full_arr),
-            "dn_immerkaer": estimate_noise_std_immerkaer(denoised),
+            "input_immerkaer": estimate_noise_std_immerkaer(source_arr),
+            "target_immerkaer": estimate_noise_std_immerkaer(denoised),
         }
+        if input_logical == "full":
+            noise["full_immerkaer"] = noise["input_immerkaer"]
+            noise["dn_immerkaer"] = noise["target_immerkaer"]
         entry = {
             "key": key,
             "study_uid": record.get("study_uid"),
@@ -207,21 +227,23 @@ def main() -> int:
             "case_id": record.get("case_id"),
             "n_slices": int(shape[0]),
             "relpath": str(dst.relative_to(base).as_posix()),
+            "input_logical": input_logical,
+            "target_logical": target_logical,
             "noise": noise,
         }
         overview_rows.append(entry)
         n_new += 1
         print(f"[done] {key} ({record.get('group')}): "
-              f"immerkaer {noise['full_immerkaer']:.5f}->{noise['dn_immerkaer']:.5f}", flush=True)
+              f"immerkaer {noise['input_immerkaer']:.5f}->{noise['target_immerkaer']:.5f}", flush=True)
 
     # register the new target volume in the manifest (idempotent; once)
-    outputs_key = f"full.{args.target_suffix}.raw"
+    outputs_key = f"{target_logical}.raw"
     patched = 0
-    for entry in overview_rows:
-        record = records[entry["key"]]
+    for key, relative in output_paths.items():
+        record = records[key]
         outputs = record.setdefault("outputs", {})
-        if outputs.get(outputs_key) != entry["relpath"]:
-            outputs[outputs_key] = entry["relpath"]
+        if outputs.get(outputs_key) != relative:
+            outputs[outputs_key] = relative
             patched += 1
     if patched:
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -248,37 +270,46 @@ def main() -> int:
     if all_rows:
         agg: dict[str, dict] = {}
 
-        # noise-level comparison -- the actual gate (Immerkaer only; the median-filter
-        # estimator is ~20s/volume and is deliberately NOT run in the training loop).
+        # Noise-level comparison only (Immerkaer; the median-filter estimator
+        # is ~20s/volume and is deliberately not run in the generation loop).
         noise_rows = [row for row in all_rows if row.get("noise")]
         for est in ("immerkaer",):
-            full_vals = np.asarray([row["noise"][f"full_{est}"] for row in noise_rows], dtype=np.float64)
-            dn_vals = np.asarray([row["noise"][f"dn_{est}"] for row in noise_rows], dtype=np.float64)
-            delta = full_vals - dn_vals
-            denom = np.where(full_vals > 0, full_vals, np.nan)
+            input_vals = np.asarray([
+                row["noise"].get(f"input_{est}", row["noise"].get(f"full_{est}"))
+                for row in noise_rows
+            ], dtype=np.float64)
+            target_vals = np.asarray([
+                row["noise"].get(f"target_{est}", row["noise"].get(f"dn_{est}"))
+                for row in noise_rows
+            ], dtype=np.float64)
+            delta = input_vals - target_vals
+            denom = np.where(input_vals > 0, input_vals, np.nan)
             rel = delta / denom  # fractional reduction
             agg[f"noise_{est}"] = {
-                "full_mean": float(np.nanmean(full_vals)),
-                "dn_mean": float(np.nanmean(dn_vals)),
+                "input_mean": float(np.nanmean(input_vals)),
+                "target_mean": float(np.nanmean(target_vals)),
                 "delta_mean": float(np.nanmean(delta)),       # > 0 => cleaner target
                 "delta_median": float(np.nanmedian(delta)),
                 "relative_reduction_mean": float(np.nanmean(rel)),
                 "n": int(len(noise_rows)),
             }
+            if input_logical == "full":
+                agg[f"noise_{est}"]["full_mean"] = agg[f"noise_{est}"]["input_mean"]
+                agg[f"noise_{est}"]["dn_mean"] = agg[f"noise_{est}"]["target_mean"]
 
         overview_path.write_text(json.dumps({
             "splits": splits,
             "n_new": n_new, "n_existing": n_existing, "n_skip_missing": n_skip_missing,
             "n_rows": len(all_rows),
             "teacher_checkpoint": str(args.checkpoint),
+            "input_logical": input_logical,
+            "target_logical": target_logical,
             "target_suffix": args.target_suffix,
             "note": (
-                "Gate = NOISE LEVEL (Immerkaer Laplacian-kernel std), not PSNR: full is itself "
-                "noisy, so half->full carries a Noise2Noise component and the recursive goal is "
-                "a lower-noise image. noise_immerkaer 'delta' = noise(full) - noise(full.<suffix>); "
-                "delta > 0 (relative_reduction_mean > 0) means the teacher produced a "
-                "meaningfully cleaner target and the round is worth training. A ~0 delta means "
-                "the teacher did not clean full (degenerate round). The median-filter estimator "
+                "Diagnostic = Immerkaer Laplacian-kernel noise level, not PSNR. "
+                "noise_immerkaer delta = input_mean - target_mean; positive values indicate "
+                "lower high-frequency energy in the teacher output, but do not distinguish "
+                "noise removal from texture loss. The median-filter estimator "
                 "is too slow for the training loop and is intentionally not computed. "
                 "'rows' keeps one diagnostic row per study and is merged across runs, so the "
                 "gate's coverage stays complete even after a resumed/partial generation."
@@ -288,7 +319,7 @@ def main() -> int:
         print(f"\noverview written: {overview_path}")
         for est in ("immerkaer",):
             a = agg[f"noise_{est}"]
-            print(f"  noise_{est}: full={a['full_mean']:.5f} -> dn={a['dn_mean']:.5f} "
+            print(f"  noise_{est}: input={a['input_mean']:.5f} -> target={a['target_mean']:.5f} "
                   f"delta={a['delta_mean']:.5f} ({a['relative_reduction_mean']*100:.2f}% reduction)")
         print(f"summary: new={n_new} existing={n_existing} skipped(missing full)={n_skip_missing}")
     return 0

@@ -27,14 +27,14 @@ Semantics (decided 2026-09-02 with the dataset owner):
 The manifest must be written into the *same directory* as ``--output-root``:
 datasets resolve the relative ``outputs`` paths from the manifest location.
 
-Example (E1, on the training server 192.168.36.102):
+Historical example (replace paths with locations available to your machine):
 
     python scripts/create_recon_splits.py \\
-      --index /data/raid0/yyc/AIReduceNoise/reconstruction-index.json \\
-      --output-root /data/raid0/yyc/AIReduceNoise \\
+      --index /path/to/reconstruction-index.json \\
+      --output-root /path/to/dataset-root \\
       --groups Mode2_1609,Mode3_1609 \\
       --test-groups Mode3_1609 \\
-      --out /data/raid0/yyc/AIReduceNoise/splits_1609.json \\
+      --out /path/to/dataset-root/manifest.json \\
       --seed 42
 """
 

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Historical AIReduceNoise3 experiment launcher; paths and stages are tied to
+# that archived run. Use README.md and caller-owned configs for new workflows.
 # AIReduceNoise3 · 方案B 续跑链：r1b 收敛 -> r2b -> r3b -> r4b
 #
 # 每一轮严格串行、三步：

@@ -6,7 +6,8 @@ Measures, on the training server GPU:
     no disk I/O)
   * fp32 vs fp16 numerical error and peak activation memory.
 
-Run on the server (192.168.36.102, GPU 0):
+Historical benchmark command from the AIR3 server experiment (GPU selection
+was local to that run; replace paths and device for a new machine):
   /opt/anaconda3/envs/pytorch201/bin/python scripts/bench_infer_fp16.py
 """
 from __future__ import annotations

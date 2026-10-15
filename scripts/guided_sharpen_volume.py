@@ -20,7 +20,7 @@ provably flat and to a patch that provably carries bone texture.
 
 Example::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/guided_sharpen_volume.py \
+    python scripts/guided_sharpen_volume.py \
       --dir outputs/air3_ypdl0027_bhc_5models --input full.bhc.r4b.raw \
       --shape 360 640 640 --radius 4 --eps-k 2 --strength 1.0
 """

@@ -1,43 +1,34 @@
 """Rebuild one study through the scanner's *conventional* (non-AI) denoising chain.
 
-The AIReduceNoise data set stores four post-processing variants of every study
-(``full``, ``full.bhc``, ``full.marfi``, ``full.marfi.bhc``).  None of them switches on
-the vendor's own denoising filters: ``ReduceNoise`` and ``Anisotropic`` are declared in
-the group's standard ``filter.xml`` but are only executed when they are explicitly
-requested as post-processing modules -- exactly like ``BHC`` / ``MARFI``.
+Some reconstruction datasets store multiple post-processing variants of every study.
+Vendor filters declared in ``filter.xml`` are only executed when explicitly requested
+as post-processing modules.
 
 The rebuild goes through the *same* reconstruction group as the batch pipeline (same
 fdkPara geometry, same full projection set), with ``--post-procs`` chosen by the caller.
-The default chain ``"BHC ReduceNoise Anisotropic"`` keeps the ``BHC`` that the
-``full.bhc`` AI input already carries and switches on both conventional denoisers, so
-the result is a like-for-like non-AI reference against the denoised volumes.
+The default chain ``"BHC ReduceNoise Anisotropic"`` is one site-specific example;
+select the chain that matches the local reconstruction protocol.
 
 One study's raw projections and config are copied to a temporary workspace first, so
 nothing in the source data set or in ``configs/recon_filters/`` is modified.
 
-Parameter sweeps go through ``--filter-file``: point it at a *copy* of the group's
-standard ``filter.xml`` (the repo ships ``Mode2_1609.convdenoise.filter.xml`` for this)
-and edit the copy's ``ReduceNoise`` / ``Anisotropic`` blocks.  The group file that the
-batch pipeline references is never touched.  The sidecar JSON records the filter file's
-md5 plus a snapshot of both blocks, so every swept volume stays traceable to the exact
-parameter values that produced it.
+Parameter sweeps go through ``--filter-file``: use a *copy* of the group's standard
+``filter.xml`` and edit the required blocks. The source config remains untouched.
+The sidecar JSON records the filter file's md5 and selected block values.
 
 Example::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/recon_conventional_denoise.py \
-      --case YPDL-26A-0027 \
-      --study 1.2.156.89797079.1182197106.1232956091.447186561 \
-      --group Mode2_1609 \
-      --out outputs/air3_ypdl0027_bhc_5models/full.bhc.conv_rn_ani.raw
+    python scripts/recon_conventional_denoise.py \
+      --source-root /path/to/raw-scans --case CASE_ID --study STUDY_ID \
+      --group GROUP_NAME --groups-config /path/to/groups.json \
+      --out /path/to/output.raw --xday-dir "$XDAY_DIR"
 
     # same study, but rebuilt from an edited copy of the filter file
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/recon_conventional_denoise.py \
-      --case YPDL-26A-0027 \
-      --study 1.2.156.89797079.1182197106.1232956091.447186561 \
-      --group Mode2_1609 \
-      --filter-file configs/recon_filters/Mode2_1609.convdenoise.filter.xml \
-      --pwls-scale 0.01 \
-      --out outputs/air3_ypdl0027_bhc_5models/full.bhc.conv_rn_ani.raw --force
+    python scripts/recon_conventional_denoise.py \
+      --source-root /path/to/raw-scans --case CASE_ID --study STUDY_ID \
+      --group GROUP_NAME --groups-config /path/to/groups.json \
+      --filter-file /path/to/copied-filter.xml --pwls-scale 0.01 \
+      --out /path/to/output.raw --xday-dir "$XDAY_DIR" --force
 """
 
 from __future__ import annotations
@@ -75,8 +66,6 @@ from cbct_n2n.reconstruction.variants import (
     effective_view_count,
 )
 
-DEFAULT_SOURCE_ROOT = r"\\192.168.36.235\团队文件-牙科ct\data_raw\PDL"
-DEFAULT_GROUPS_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "recon_groups.json"
 DEFAULT_POST_PROCS = "BHC ReduceNoise Anisotropic"
 
 
@@ -85,13 +74,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--source-root", type=Path, default=Path(DEFAULT_SOURCE_ROOT),
+    parser.add_argument("--source-root", type=Path, required=True,
                         help="Root containing <case>/<study>/<series>_ModeX_* raw dirs and config/")
-    parser.add_argument("--case", required=True, help="case id, e.g. YPDL-26A-0027")
+    parser.add_argument("--case", required=True, help="stable case id, e.g. case_0001")
     parser.add_argument("--study", required=True, help="study uid (the directory under <case>/)")
-    parser.add_argument("--group", default="Mode2_1609",
+    parser.add_argument("--group", required=True,
                         help="reconstruction group name from --groups-config")
-    parser.add_argument("--groups-config", type=Path, default=DEFAULT_GROUPS_CONFIG)
+    parser.add_argument("--groups-config", type=Path, required=True)
     parser.add_argument("--post-procs", default=DEFAULT_POST_PROCS,
                         help="space-separated XDay post-processing chain")
     parser.add_argument("--filter-file", type=Path, default=None,
@@ -101,8 +90,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "touching configs/recon_filters/<group>.filter.xml, which the "
                              "batch pipeline depends on.")
     parser.add_argument("--out", type=Path, required=True, help="destination .raw file")
-    parser.add_argument("--xday-dir", type=Path,
-                        default=Path(os.environ.get("XDAY_DIR", r"D:\XDay Release\XDay 617.2_polyc")))
+    parser.add_argument("--xday-dir", type=Path, default=None,
+                        help="XDay SDK path (or set XDAY_DIR)")
     parser.add_argument("--dtype", default="float32", choices=("int16", "uint16", "float32"))
     parser.add_argument("--pwls-scale", type=float, default=None,
                         help="Enable the data2-style PWLS patch: beta = SCALE * mean(fieldMatrixMax*.bin) "
@@ -111,7 +100,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keep-workspace", action="store_true",
                         help="keep the temporary raw/config copy for inspection")
     parser.add_argument("--force", action="store_true", help="overwrite an existing --out file")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.xday_dir is None and os.environ.get("XDAY_DIR"):
+        args.xday_dir = Path(os.environ["XDAY_DIR"])
+    if args.xday_dir is None:
+        parser.error("provide --xday-dir or set XDAY_DIR")
+    return args
 
 
 def _probe_study(source_root: Path, case_id: str, study_uid: str) -> Study | None:

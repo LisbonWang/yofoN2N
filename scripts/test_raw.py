@@ -18,13 +18,13 @@ Legacy pair.json-style manifests (records with ``full_path``/``even_path`` and
 ``.npy`` files) are intentionally NOT supported here — ``scripts/test.py``
 still covers those.
 
-Example (on the training server 192.168.36.102):
+Example (replace config, manifest, and paths):
   python scripts/test_raw.py \\
-    --config configs/1609.yaml \\
-    --manifest /data/raid0/yyc/AIReduceNoise/splits_1609.json \\
-    --checkpoint runs/1609_n2n/best.pt \\
+    --config /path/to/task-2d.yaml \\
+    --manifest /path/to/dataset/manifest.json \\
+    --checkpoint /path/to/runs/experiment/best.pt \\
     --split test \\
-    --output-dir outputs/eval_1609_test
+    --output-dir /path/to/outputs/evaluation
 """
 from __future__ import annotations
 
@@ -94,7 +94,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate a trained 2D UNet on RAW volumes from a study-level manifest."
     )
-    parser.add_argument("--config", type=Path, default=Path("configs/1609.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config matching the selected checkpoint.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")

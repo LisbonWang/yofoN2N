@@ -13,7 +13,7 @@ provably flat.  A sharpener is only useful if the second number stays small.
 
 Example::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/guided_sharpen_sweep.py \
+    python scripts/guided_sharpen_sweep.py \
       --dir outputs/air3_ypdl0027_bhc_5models --input full.bhc.r4b.raw \
       --shape 360 640 640 --noisy full.bhc.raw \
       --radius 2 4 6 --eps-k 1 2 4 8 --strength 0.25 0.5 0.75 1 1.5 2 3

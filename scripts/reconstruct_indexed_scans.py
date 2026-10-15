@@ -45,7 +45,7 @@ def main() -> int:
     try:
         from xday import invoke_xday
     except ImportError as exc:
-        raise SystemExit("xday-kits is required; install it with pip install -e D:\\workspace2\\xday_kits") from exc
+        raise SystemExit("XDay is required for reconstruction. Install the XDay SDK and xday-kits package using your site's supported installation procedure.") from exc
     if args.dry_run:
         for item in dataset["records"]:
             print(f"{item['case_id']}\t{item['raw_dir']}\t{item['cfg_dir']}")

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Historical private-data review helper for one PDL network share.
 # Expert-review package, phase 1/3: reconstruction.
 #
 # Builds, for each of 9 held-out (test11) studies, two volumes out of the *same*

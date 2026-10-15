@@ -23,7 +23,7 @@ in the display scaling.
 
 Example::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/_compare_source_domains.py \
+    python scripts/_compare_source_domains.py \
       --dir outputs/air3_ypdl0027_bhc_5models --shape 360 640 640 \
       --source plain=full.raw --source bhc=full.bhc.raw --source external=full.ex.raw \
       --model r3b --model r4b \

@@ -13,7 +13,7 @@ the parameters rather than to a shifted crop.
 
 Example::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/compare_conv_zoom.py \
+    python scripts/compare_conv_zoom.py \
       --dir outputs/air3_ypdl0027_bhc_5models --shape 360 640 640 \
       --out outputs/air3_ypdl0027_bhc_5models/figures_pwls600/zoom.png
 """

@@ -14,8 +14,8 @@ real size cuts come from architecture changes (base_channels/depth), not int8.
 The script is kept for models with wider activation ranges.
 
 Usage:
-    python scripts/quantize_onnx.py --onnx outputs/demo/best.onnx
-    python scripts/quantize_onnx.py --onnx outputs/demo/best.onnx --num-cases 4 --slices-per-case 8
+    python scripts/quantize_onnx.py --onnx /path/to/model.onnx --pairs-root /path/to/pairs
+    python scripts/quantize_onnx.py --onnx /path/to/model.onnx --pairs-root /path/to/pairs --num-cases 4 --slices-per-case 8
 """
 from __future__ import annotations
 
@@ -28,9 +28,6 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantType, quantize_static
-
-DEFAULT_PAIRS_ROOT = Path(r"Z:\raid5\共享数据\典型图像\长安管口-PDL-N2N-Pairs")
-
 
 def _pad_to_multiple(image: np.ndarray, multiple: int = 32) -> np.ndarray:
     h, w = image.shape
@@ -73,9 +70,9 @@ class PairSliceReader(CalibrationDataReader):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--onnx", type=Path, default=Path("outputs/demo/best.onnx"))
+    parser.add_argument("--onnx", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=None, help="default: <onnx dir>/<stem>_int8.onnx")
-    parser.add_argument("--pairs-root", type=Path, default=DEFAULT_PAIRS_ROOT,
+    parser.add_argument("--pairs-root", type=Path, required=True,
                         help="N2N pairs tree used for calibration slices")
     parser.add_argument("--num-cases", type=int, default=2, help="number of cases to sample (default: 2)")
     parser.add_argument("--slices-per-case", type=int, default=8, help="slices per case (default: 8)")

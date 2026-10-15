@@ -1,9 +1,9 @@
 """Export a trained UNet2D checkpoint to ONNX with dynamic input size.
 
 Usage:
-    python scripts/export_onnx.py --checkpoint outputs/demo/best.pt
-    python scripts/export_onnx.py --checkpoint outputs/demo/best.pt --input-size 512x512 --opset 17
-    python scripts/export_onnx.py --checkpoint outputs/demo/best.pt --fp16   # half-size ONNX
+    python scripts/export_onnx.py --checkpoint /path/to/runs/experiment/best.pt
+    python scripts/export_onnx.py --checkpoint /path/to/runs/experiment/best.pt --input-size 512x512 --opset 17
+    python scripts/export_onnx.py --checkpoint /path/to/runs/experiment/best.pt --fp16
 
 The model architecture is rebuilt from the checkpoint's ``config["model"]`` section,
 so no manual hyper-parameter entry is needed.  Input is dynamic on batch/height/width
@@ -58,8 +58,8 @@ def parse_size(text: str) -> tuple[int, ...]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--checkpoint", type=Path, default=Path("outputs/demo/best.pt"),
-                        help="checkpoint .pt file (default: outputs/demo/best.pt)")
+    parser.add_argument("--checkpoint", type=Path, required=True,
+                        help="checkpoint .pt file")
     parser.add_argument("--output", type=Path, default=None,
                         help="output .onnx path (default: <checkpoint dir>/<stem>.onnx)")
     parser.add_argument("--input-size", type=parse_size, default=(256, 256), metavar="HxW",

@@ -1,4 +1,4 @@
-"""Pre-launch validation for the AIR3 r2b..r4b chain (run on the training host).
+"""Historical AIR3 r2b..r4b setup check with a fixed experiment layout.
 
 Checks, without touching any data:
   1. the three new round configs parse and are control variables of r0

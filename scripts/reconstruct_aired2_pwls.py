@@ -13,16 +13,18 @@ Output layout mirrors AIReduceNoise:
   <output_root>/PDL/<group>/<case_id>/<study_uid>/{even,odd,full,
   full.bhc,full.marfi,full.marfi.bhc}.raw + metadata.json
 
-Usage (Windows box with XDay SDK + GPU):
-  python scripts/reconstruct_aired2_pwls.py --dry-run
-  python scripts/reconstruct_aired2_pwls.py --limit 1
-  python scripts/reconstruct_aired2_pwls.py --continue-on-error
+Usage (AIReduceNoise2-specific; provide paths from that dataset snapshot):
+  python scripts/reconstruct_aired2_pwls.py --index PATH --manifest PATH \\
+      --output-root PATH --xday-dir PATH --dry-run
+  python scripts/reconstruct_aired2_pwls.py --index PATH --manifest PATH \\
+      --output-root PATH --xday-dir PATH --limit 1
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -138,12 +140,13 @@ def _atomic_raw(path: Path, volume: np.ndarray) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="AIReduceNoise2: PWLS(0.01*brightness)+Hamming batch reconstruction")
-    p.add_argument("--index", type=Path, default=r"Z:\raid0\yyc\AIReduceNoise\reconstruction-index.json",
+    p.add_argument("--index", type=Path, required=True,
                    help="AIReduceNoise reconstruction-index.json (raw/cfg/kv/ma source)")
-    p.add_argument("--manifest", type=Path, default=r"Z:\raid0\yyc\AIReduceNoise\splits_1609v2.json",
+    p.add_argument("--manifest", type=Path, required=True,
                    help="1609 split manifest selecting the studies to rebuild")
-    p.add_argument("--output-root", type=Path, default=r"Z:\raid0\yyc\AIReduceNoise2")
-    p.add_argument("--xday-dir", type=Path, default=Path(r"D:\XDay Release\XDay 617.2_polyc"))
+    p.add_argument("--output-root", type=Path, required=True)
+    p.add_argument("--xday-dir", type=Path, default=None,
+                   help="XDay SDK path (or set XDAY_DIR)")
     p.add_argument("--combo", action="append", metavar="TAG=CHAIN", default=None,
                    help=f"Repeatable. Default: {'; '.join(f'{t}={c!r}' for t, c in DEFAULT_COMBOS)}")
     p.add_argument("--dtype", default="float32", choices=("int16", "uint16", "float32"))
@@ -166,7 +169,12 @@ def _parse_combo(spec: str) -> tuple[str, str]:
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.xday_dir is None and os.environ.get("XDAY_DIR"):
+        args.xday_dir = Path(os.environ["XDAY_DIR"])
+    if args.xday_dir is None:
+        parser.error("provide --xday-dir or set XDAY_DIR")
     scale = args.scale
     combos = tuple(_parse_combo(s) for s in args.combo) if args.combo else DEFAULT_COMBOS
     split_modes = DEFAULT_SPLIT_MODES
@@ -202,7 +210,7 @@ def main() -> int:
     try:
         from xday import load_xday, invoke_xday
     except ImportError:
-        print("xday-kits required: pip install -e D:\\workspace2\\xday_kits", file=sys.stderr)
+        print("XDay is required for reconstruction. Install the XDay SDK and xday-kits package using your site's supported installation procedure.", file=sys.stderr)
         return 2
     sdk = load_xday(args.xday_dir)
 

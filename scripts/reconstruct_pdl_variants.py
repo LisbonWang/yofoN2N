@@ -89,17 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Batch CBCT reconstruction: 6 output variants per study, grouped by <Mode>_<FOV>.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--source-root", type=Path,
-                        default=r"\\192.168.36.235\团队文件-牙科ct\data_raw\PDL",
+    parser.add_argument("--source-root", type=Path, required=True,
                         help="Root containing <case>/<study>/<series>_ModeX_*kV*mA* raw dirs and config/")
-    parser.add_argument("--output-root", type=Path,
-                        default=r"Z:\raid0\yyc\AIReduceNoise",
+    parser.add_argument("--output-root", type=Path, required=True,
                         help="Where <source>/<Mode>_<FOV>/<case_id>/<study_uid>/*.raw volumes are written "
                              "(top-level <source> defaults to the source root name, e.g. PDL)")
     parser.add_argument("--top-dir", default=None,
                         help="Override the top-level output directory name (default: source root name). "
                              "Useful for keeping fixed and unmodified reconstructions in separate trees.")
-    parser.add_argument("--xday-dir", type=Path, default=Path(os.environ.get("XDAY_DIR", "D:\\XDay Release\\XDay617.2")),
+    parser.add_argument("--xday-dir", type=Path, default=None,
                         help="XDay SDK directory (xday.dll + dependencies)")
     parser.add_argument("--combo", action="append", metavar="TAG=CHAIN", default=None,
                         help=f"Post-processing combo; repeatable. Default: {'; '.join(f'{t}={c!r}' for t, c in DEFAULT_COMBOS)}")
@@ -168,7 +166,12 @@ def resolve_index_path(output_root: Path, index: Path | None) -> Path:
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.xday_dir is None and os.environ.get("XDAY_DIR"):
+        args.xday_dir = Path(os.environ["XDAY_DIR"])
+    if args.xday_dir is None:
+        parser.error("provide --xday-dir or set XDAY_DIR")
     combos = tuple(_parse_combo(spec) for spec in args.combo) if args.combo else DEFAULT_COMBOS
     if not combos:
         raise SystemExit("at least one --combo is required")

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Historical AIReduceNoise3 experiment launcher; paths and stages are tied to
+# that archived run. Use README.md and caller-owned configs for new workflows.
 # AIReduceNoise3 · 方案B r1b（blend-at-round-1）自动链：M0 目标 -> r1 混合目标 -> 门控 -> r1b 训练
 #
 # 用法（服务器 192.168.36.102，必须在 tmux 内跑，日志 /tmp/air3_r1b.log）：

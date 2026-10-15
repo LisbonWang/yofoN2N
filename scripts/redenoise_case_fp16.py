@@ -1,4 +1,6 @@
-"""Re-denoise a single case directory with an fp16 3D UNet, reporting pure-GPU time.
+"""Historical AIReduceNoise2 inference utility; example paths are run-specific.
+
+Re-denoise a single case directory with an fp16 3D UNet, reporting pure-GPU time.
 
 Reads ``full.raw`` from the case dir, runs whole-volume fp16 inference,
 overwrites ``full_denoised.raw`` + ``full_metrics.json``, and reports the

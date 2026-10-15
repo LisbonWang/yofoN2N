@@ -1,4 +1,6 @@
-"""Output-layer banded validation for the recursive rounds (the real r3 gate).
+"""Historical AIReduceNoise2 round-validation utility; paths below are run-specific.
+
+Output-layer banded validation for the recursive rounds (the real r3 gate).
 
 The r3 density-blend plan (``docs/plans/r3-density-blend.md``) has two gates:
 

@@ -1,4 +1,6 @@
-"""Render side-by-side denoising comparison figures for selected test cases.
+"""Historical AIReduceNoise figure-generation utility with fixed manifests.
+
+Render side-by-side denoising comparison figures for selected test cases.
 
 For each (config, checkpoint, manifest, case-key) tuple this loads the
 even-view source, runs whole-volume 3D inference, and writes a 3x3 axial

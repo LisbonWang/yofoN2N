@@ -19,7 +19,8 @@ from cbct_n2n.training.trainer import fit, seed_everything
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train full-slice 2D UNet Noise2Noise model.")
-    parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config; no dataset-specific config is assumed.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--resume", type=Path)

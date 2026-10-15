@@ -14,11 +14,11 @@ dependencies = [
     "torch>=2.0",
     "scikit-image>=0.21",
     "tqdm>=4.65",
-    "xday-kits>=0.1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+reconstruction = ["xday-kits>=0.1.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

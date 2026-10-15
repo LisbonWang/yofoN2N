@@ -49,7 +49,7 @@ def _default_reconstruct(*args: Any, **kwargs: Any):
     try:
         from xday import invoke_xday
     except ImportError as exc:
-        raise RuntimeError("xday-kits is required for reconstruction; install it with pip install -e D:\\workspace2\\xday_kits") from exc
+        raise RuntimeError("XDay is required for reconstruction. Install the XDay SDK and xday-kits package using your site's supported installation procedure.") from exc
     return invoke_xday(*args, **kwargs)
 
 

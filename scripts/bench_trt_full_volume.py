@@ -16,7 +16,7 @@ device copies and CPU accumulation) for one complete volume.
 Usage:
     python scripts/bench_trt_full_volume.py \
         --engine runs/1609v2_n2n_3d_h2f_128/best_fp16.engine \
-        --input Z:/raid0/yyc/AIReduceNoise2/PDL/Mode2_1609/<case>/<study>/full.raw \
+        --input /path/to/dataset/PDL/Mode2_1609/<case>/<study>/full.raw \
         --shape 360 640 640
 """
 from __future__ import annotations

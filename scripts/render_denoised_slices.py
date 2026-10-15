@@ -5,9 +5,9 @@ comparison figure per case: rows = volume type (noisy half source, per-model
 even_denoised, full reference, full_denoised), columns = axial slice indices.
 A center-zoom strip on the mid slice is appended for fine-detail inspection.
 
-Usage (on the training server, pytorch201 env):
+Example (replace paths with locations available to your machine):
   python scripts/render_denoised_slices.py \
-    --root /data/raid0/yyc/AIReduceNoise \
+    --root /path/to/dataset-root \
     --outdir outputs/slice_cmp \
     --case 'Mode2_1609__<uid>' --case 'Mode3_1609__<uid>'
 """
@@ -59,12 +59,14 @@ def _window(v: np.ndarray | None) -> tuple[float, float]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", type=Path, default=Path("/data/raid0/yyc/AIReduceNoise"))
+    ap.add_argument("--root", type=Path, required=True,
+                    help="Root directory containing rendered experiment outputs.")
     ap.add_argument("--outdir", type=Path, default=Path("outputs/slice_cmp"))
     ap.add_argument("--case", action="append", required=True, help="case dir name")
     ap.add_argument("--zs", type=int, nargs="+", default=[90, 180, 270])
     ap.add_argument("--zoom", type=int, default=180, help="center crop half-size (px) for zoom strip")
-    ap.add_argument("--manifests", type=Path, default=Path("/data/raid0/yyc/AIReduceNoise/splits_1609.json"))
+    ap.add_argument("--manifests", type=Path, required=True,
+                    help="Manifest describing the source records and shapes.")
     args = ap.parse_args()
 
     manifest = json.loads(Path(args.manifests).read_text(encoding="utf-8"))

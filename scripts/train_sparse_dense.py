@@ -34,7 +34,8 @@ def build_model(arch: str, model_cfg: dict) -> "torch.nn.Module":
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train sparse-angle to full-view 2D UNet from RAW volumes.")
-    parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config; no dataset-specific config is assumed.")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--resume", type=Path)

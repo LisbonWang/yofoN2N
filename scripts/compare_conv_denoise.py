@@ -16,7 +16,7 @@ tissue floor 0.01) so the numbers are directly comparable with an existing run s
 
 Example::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/compare_conv_denoise.py \
+    python scripts/compare_conv_denoise.py \
       --dir outputs/air3_ypdl0027_bhc_5models \
       --input full.bhc.raw --conv full.bhc.conv_rn_ani.raw \
       --model r0=full.bhc.r0.raw --model r1b=full.bhc.r1b.raw \

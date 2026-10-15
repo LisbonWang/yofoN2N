@@ -27,8 +27,8 @@ SUPERVISION_MAPPINGS = {
     "half_view_n2n": ("even->odd", "odd->even"),
 }
 
-#: supported mapping directions, source subset -> target subset
-ALLOWED_SOURCES = ("even", "odd")
+#: supported mapping directions, source volume -> target volume
+ALLOWED_SOURCES = ("even", "odd", "full")
 ALLOWED_TARGETS = ("even", "odd", "full")
 
 
@@ -118,8 +118,9 @@ class N2NDataset(Dataset):
     Replaces :class:`RawPairedSliceDataset` with an explicit *mapping* design:
 
     - ``mappings`` selects the input -> target directions, e.g. ``even->odd``,
-      ``odd->even``, ``even->full``, ``odd->full``.  Multiple directions may be
-      enabled at once and their samples are mixed in the same epoch.  A legacy
+      ``odd->even``, ``even->full``, ``odd->full``, or ``full->full.dn``.
+      Multiple directions may be enabled at once and their samples are mixed
+      in the same epoch. A legacy
       ``supervision_mode`` (``full_view`` / ``half_view_n2n``) is translated when
       no explicit mappings are given.  Targets may also be ``full.*`` variants
       (e.g. ``full.dn`` = a full volume denoised by a teacher model), which the

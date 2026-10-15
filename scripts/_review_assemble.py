@@ -15,7 +15,7 @@ package is volumes + JSON provenance, as requested.
 
 Usage::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/_review_assemble.py
+    python scripts/_review_assemble.py
 """
 from __future__ import annotations
 
@@ -539,7 +539,7 @@ def render_readme(manifest: dict) -> str:
                "bash scripts/_review_recon.sh      # 重建（幂等，已存在则跳过）\n"
                "bash scripts/_review_infer.sh      # r1b..r4b 推理\n"
                "bash scripts/_review_sharpen.sh    # s=0.3 引导滤波锐化\n"
-               "C:/Users/admin/anaconda3/envs/torch/python.exe scripts/_review_assemble.py\n"
+               "python scripts/_review_assemble.py\n"
                "```\n")
     return "\n".join(out)
 

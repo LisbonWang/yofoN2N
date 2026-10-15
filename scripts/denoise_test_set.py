@@ -19,10 +19,10 @@ UNet applied through overlapping H/W + D tiles with trapezoid (ramp) fusion.
 
 Example:
   python scripts/denoise_test_set.py \\
-    --manifest Z:/raid0/yyc/AIReduceNoise3/splits_cross_mode_test11.json \\
-    --root Z:/raid0/yyc/AIReduceNoise3 \\
-    --out-root outputs/test11_cross_mode \\
-    --checkpoint runs/air3_mode2_1609_unet3d_h2f_128_r0/best.pt \\
+    --manifest /path/to/dataset/manifest.json \\
+    --root /path/to/dataset \\
+    --out-root outputs/test-set \\
+    --checkpoint runs/EXPERIMENT/best.pt \\
     --domains full.raw,full.bhc.raw,full.marfi.bhc.raw \\
     --voxel-depth 128 --patch-hw 256 --overlap-d 16 --overlap-hw 16
 """

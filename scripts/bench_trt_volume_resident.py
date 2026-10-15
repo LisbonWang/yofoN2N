@@ -22,7 +22,7 @@ allocated by TensorRT outside the PyTorch caching allocator is counted.
 
 Usage::
 
-    C:/Users/admin/anaconda3/envs/torch/python.exe scripts/bench_trt_volume_resident.py \
+    python scripts/bench_trt_volume_resident.py \
       --engine outputs/trt_bench/unet3d_256x256x128_fp16_io32.engine \
       --shape 360 640 640 --repeats 5
 """

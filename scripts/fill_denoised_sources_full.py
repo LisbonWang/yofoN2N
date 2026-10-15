@@ -72,7 +72,8 @@ def _case_dir_name(record: dict[str, Any]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Copy source half volumes + denoise full-view volumes.")
-    parser.add_argument("--config", type=Path, default=Path("configs/1609.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config matching the selected checkpoint.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")

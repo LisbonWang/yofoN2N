@@ -7,13 +7,13 @@ Inference slides a non-overlapping ``voxel_depth``-slice window across z
 and keeps every denoised slice; H/W is padded to a multiple of 32.  Metrics
 are computed against the full-view volume, identical to ``test_raw.py``.
 
-Example (on the training server 192.168.36.102):
+Example (replace config, manifest, and paths):
   python scripts/test_raw_3d.py \\
-    --config configs/1609_unet3d.yaml \\
-    --manifest /data/raid0/yyc/AIReduceNoise/splits_1609.json \\
-    --checkpoint runs/1609_n2n_3d/best.pt \\
+    --config /path/to/task-3d.yaml \\
+    --manifest /path/to/dataset/manifest.json \\
+    --checkpoint /path/to/runs/experiment/best.pt \\
     --split test \\
-    --output-dir outputs/eval_1609_n2n_3d
+    --output-dir /path/to/outputs/evaluation
 """
 from __future__ import annotations
 
@@ -86,7 +86,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate a trained 3D UNet on RAW volumes from a study-level manifest."
     )
-    parser.add_argument("--config", type=Path, default=Path("configs/1609_unet3d.yaml"))
+    parser.add_argument("--config", type=Path, required=True,
+                        help="Task YAML config matching the selected checkpoint.")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
